@@ -1,0 +1,7 @@
+[personality]
+path = "personalities/default"
+
+[personality.files]
+system_prompt = "system_prompt.md"
+working_memory = "working_memory.json"
+diary_dir = "diary"

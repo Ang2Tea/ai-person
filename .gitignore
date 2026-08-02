@@ -16,8 +16,5 @@ target
 # rustc will dump stack traces when hitting an internal compiler error to PWD
 rustc-ice-*.txt
 
-**/.env
-
-# Поменять логику памяти
-data.json
-SYSTEM_PROMPT.md
+**/*.env
+personalities/
