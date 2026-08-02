@@ -2,30 +2,23 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use std::pin::Pin;
 use teloxide::requests::Requester;
-use teloxide::types::ChatId;
 
-use crate::buffer::{BufferStore, BufferedMessage};
+use crate::buffer::BufferedMessage;
 use crate::contracts::BufferStorage;
 use crate::errors::ToolError;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolContext};
 
-pub struct SendMessage<B> {
+pub struct SendMessage {
     bot: teloxide::Bot,
-    chat_id: ChatId,
-    buffer: BufferStore<B>,
 }
 
-impl<B> SendMessage<B> {
-    pub fn new(bot: teloxide::Bot, chat_id: ChatId, buffer: BufferStore<B>) -> Self {
-        Self {
-            bot,
-            chat_id,
-            buffer,
-        }
+impl SendMessage {
+    pub fn new(bot: teloxide::Bot) -> Self {
+        Self { bot }
     }
 }
 
-impl<B> Tool for SendMessage<B>
+impl<B> Tool<B> for SendMessage
 where
     B: BufferStorage + Clone + Send + Sync + 'static,
 {
@@ -56,10 +49,11 @@ where
     fn call<'a>(
         &self,
         args: Value,
+        ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         let bot = self.bot.clone();
-        let chat_id = self.chat_id;
-        let buffer = self.buffer.clone();
+        let chat_id = ctx.chat_id;
+        let buffer = ctx.buffer.clone();
 
         Box::pin(async move {
             let text = args

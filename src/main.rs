@@ -22,12 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let buffer_storage = LocalFileStorage::new("data.json");
     let buffer = BufferStore::new(buffer_storage)?;
 
-    let chat_bot = ChatBot::new(timeweb_client, buffer.clone(), SYSTEM_PROMPT);
+    let chat_bot = ChatBot::new(bot.clone(), timeweb_client, buffer.clone(), SYSTEM_PROMPT);
 
-    teloxide::repl(bot.clone(), move |bot, msg| {
+    teloxide::repl(bot.clone(), move |msg: teloxide::types::Message| {
         let chat_bot = chat_bot.clone();
         async move {
-            if let Err(err) = chat_bot.handle_message(bot, msg).await {
+            if let Err(err) = chat_bot.handle_message(msg).await {
                 tracing::error!(%err, "Error handling message");
             }
             Ok(())

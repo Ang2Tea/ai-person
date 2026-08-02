@@ -3,11 +3,11 @@ use serde_json::{Value, json};
 use std::pin::Pin;
 
 use crate::errors::ToolError;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolContext};
 
 pub struct GetCurrentDatetime;
 
-impl Tool for GetCurrentDatetime {
+impl<B: Send + Sync + 'static> Tool<B> for GetCurrentDatetime {
     fn name(&self) -> &str {
         "get_current_datetime"
     }
@@ -30,6 +30,7 @@ impl Tool for GetCurrentDatetime {
     fn call<'a>(
         &self,
         _args: Value,
+        _ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move { Ok(Utc::now().to_rfc3339()) })
     }

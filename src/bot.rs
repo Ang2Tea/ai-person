@@ -13,7 +13,7 @@ use crate::{
     buffer::{BufferStore, BufferedMessage},
     contracts::{BufferStorage, ChatMessage},
     errors::AppError,
-    tools::{GetCurrentDatetime, SendMessage, ToolRegistry, Wait},
+    tools::{GetCurrentDatetime, SendMessage, ToolContext, ToolRegistry, Wait},
 };
 
 const MODEL: &str = "deepseek/deepseek-v4-flash";
@@ -21,24 +21,38 @@ const MAX_TOOL_ITERATIONS: usize = 5;
 
 #[derive(Clone)]
 pub struct ChatBot<B> {
+    bot: Bot,
     llm: TimewebClient,
     buffer: BufferStore<B>,
     system_prompt: Arc<str>,
+    tools: Arc<ToolRegistry<B>>,
 }
 
 impl<B> ChatBot<B>
 where
     B: BufferStorage + Clone + Send + Sync + 'static,
 {
-    pub fn new(llm: TimewebClient, buffer: BufferStore<B>, system_prompt: impl Into<Arc<str>>) -> Self {
+    pub fn new(
+        bot: Bot,
+        llm: TimewebClient,
+        buffer: BufferStore<B>,
+        system_prompt: impl Into<Arc<str>>,
+    ) -> Self {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(GetCurrentDatetime));
+        registry.register(Arc::new(Wait));
+        registry.register(Arc::new(SendMessage::new(bot.clone())));
+
         Self {
+            bot,
             llm,
             buffer,
             system_prompt: system_prompt.into(),
+            tools: Arc::new(registry),
         }
     }
 
-    pub async fn handle_message(&self, bot: Bot, msg: Message) -> Result<(), AppError> {
+    pub async fn handle_message(&self, msg: Message) -> Result<(), AppError> {
         let Some(chat_id) = msg.chat_id() else {
             tracing::error!("Can`t get chat id");
             return Ok(());
@@ -72,24 +86,23 @@ where
 
         let mut messages = chat_buffer.to_request_messages(&self.system_prompt);
 
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(GetCurrentDatetime));
-        registry.register(Arc::new(Wait));
-        registry.register(Arc::new(SendMessage::new(
-            bot.clone(),
+        let ctx = ToolContext {
             chat_id,
-            self.buffer.clone(),
-        )));
+            buffer: self.buffer.clone(),
+        };
 
         let mut final_reply: Option<ChatMessage> = None;
 
         for i in 0..MAX_TOOL_ITERATIONS {
-            let reply = self.llm.chat(MODEL, &messages, &registry.specs()).await?;
+            let reply = self
+                .llm
+                .chat(MODEL, &messages, &self.tools.specs())
+                .await?;
             let calls = reply.tool_calls.clone().unwrap_or_default();
 
             if let Some(wait_call) = calls.iter().find(|c| c.function.name == "wait") {
                 tracing::debug!(chat_id = chat_id.0, "model chose to wait, ending turn silently");
-                registry.dispatch(wait_call).await;
+                self.tools.dispatch(wait_call, &ctx).await;
                 return Ok(());
             }
 
@@ -109,7 +122,7 @@ where
 
             messages.push(reply);
             for call in &calls {
-                let result = registry.dispatch(call).await;
+                let result = self.tools.dispatch(call, &ctx).await;
                 messages.push(ChatMessage::tool_result(call.id.clone(), result));
             }
         }
@@ -118,7 +131,7 @@ where
             return Ok(());
         };
 
-        bot.send_message(msg.chat.id, &text).await?;
+        self.bot.send_message(msg.chat.id, &text).await?;
 
         let outgoing = BufferedMessage {
             telegram_message_id: msg.id.0,

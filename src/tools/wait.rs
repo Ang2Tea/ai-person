@@ -2,11 +2,11 @@ use serde_json::{Value, json};
 use std::pin::Pin;
 
 use crate::errors::ToolError;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolContext};
 
 pub struct Wait;
 
-impl Tool for Wait {
+impl<B: Send + Sync + 'static> Tool<B> for Wait {
     fn name(&self) -> &str {
         "wait"
     }
@@ -29,6 +29,7 @@ impl Tool for Wait {
     fn call<'a>(
         &self,
         _args: Value,
+        _ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move { Ok("ok, staying silent".to_owned()) })
     }
