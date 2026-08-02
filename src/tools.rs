@@ -1,10 +1,16 @@
 mod context;
 mod get_current_datetime;
+mod list_known_chats;
+mod remember;
+mod search_memory;
 mod send_message;
 mod wait;
 
 pub use context::ToolContext;
 pub use get_current_datetime::GetCurrentDatetime;
+pub use list_known_chats::ListKnownChats;
+pub use remember::Remember;
+pub use search_memory::SearchMemory;
 pub use send_message::SendMessage;
 pub use wait::Wait;
 

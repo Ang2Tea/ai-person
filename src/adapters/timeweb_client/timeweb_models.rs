@@ -13,6 +13,19 @@ pub struct ChatResponse {
     #[serde(rename = "system_fingerprint")]
     pub system_fingerprint: String,
     pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub usage: Usage,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    #[serde(rename = "prompt_tokens", default)]
+    pub prompt_tokens: u32,
+    #[serde(rename = "completion_tokens", default)]
+    pub completion_tokens: u32,
+    #[serde(rename = "total_tokens", default)]
+    pub total_tokens: u32,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

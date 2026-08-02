@@ -30,3 +30,15 @@ pub enum ToolError {
     #[error("tool failed: {0}")]
     Failed(String),
 }
+
+#[derive(Debug, Error)]
+pub enum MemoryError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid record format: {0}")]
+    Format(String),
+    #[error("yaml error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+    #[error(transparent)]
+    Llm(#[from] LlmError),
+}

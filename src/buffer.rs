@@ -34,7 +34,13 @@ impl ChatBuffer {
             .iter()
             .map(|m| {
                 let who = if m.is_bot { "Бот" } else { &m.sender_name };
-                format!("[{}] {}: {}", m.timestamp.format("%H:%M"), who, m.text)
+                format!(
+                    "[{} #{}] {}: {}",
+                    m.timestamp.format("%H:%M"),
+                    m.telegram_message_id,
+                    who,
+                    m.text
+                )
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -45,6 +51,22 @@ impl ChatBuffer {
             ChatMessage::system(system_prompt),
             ChatMessage::user(self.to_transcript()),
         ]
+    }
+
+    pub fn truncate_keep_last(&mut self, n: usize) {
+        while self.messages.len() > n {
+            self.messages.pop_front();
+        }
+    }
+
+    /// Имя последнего собеседника (не бота) — грубая метка для отображения чата
+    /// человеку/модели, у нас нет отдельно хранимого названия чата/группы.
+    pub fn last_sender_name(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.is_bot)
+            .map(|m| m.sender_name.as_str())
     }
 }
 
@@ -94,6 +116,20 @@ where
     pub async fn get(&self, chat_id: i64) -> Option<ChatBuffer> {
         let buffers = self.buffers.read().await;
         buffers.get(&chat_id).cloned()
+    }
+
+    /// Все чаты, с которыми бот уже когда-либо взаимодействовал (ключи буфера).
+    pub async fn chat_ids(&self) -> Vec<i64> {
+        let buffers = self.buffers.read().await;
+        buffers.keys().copied().collect()
+    }
+
+    pub async fn truncate_keep_last(&self, chat_id: i64, n: usize) {
+        let mut buffers = self.buffers.write().await;
+        if let Some(buffer) = buffers.get_mut(&chat_id) {
+            buffer.truncate_keep_last(n);
+        }
+        self.dirty.store(true, Ordering::Release);
     }
 
     pub async fn flush(&self) -> Result<(), BufferError> {

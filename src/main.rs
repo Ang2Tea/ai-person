@@ -4,6 +4,7 @@ use ai_chat_person::{
     adapters::{local_file_storage::LocalFileStorage, timeweb_client::TimewebClient},
     bot::ChatBot,
     buffer::BufferStore,
+    memory::MemoryStore,
     settings::Settings,
 };
 use teloxide::Bot;
@@ -24,7 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let buffer = BufferStore::new(buffer_storage)?;
 
     let system_prompt = fs::read_to_string(settings.personality.system_prompt_path())?;
-    let chat_bot = ChatBot::new(bot.clone(), timeweb_client, buffer.clone(), system_prompt);
+    let memory = MemoryStore::new(settings.personality.diary_dir_path());
+    let chat_bot = ChatBot::new(
+        bot.clone(),
+        timeweb_client,
+        buffer.clone(),
+        memory,
+        settings.memory,
+        system_prompt,
+    );
 
     teloxide::repl(bot.clone(), move |msg: teloxide::types::Message| {
         let chat_bot = chat_bot.clone();

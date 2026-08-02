@@ -35,8 +35,19 @@ impl PersonalitySettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct MemorySettings {
+    pub token_threshold: u32,
+    pub dedup_similarity_threshold: f32,
+    pub search_similarity_threshold: f32,
+    pub search_result_limit: usize,
+    pub min_fact_length: usize,
+    pub keep_last_messages: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     pub personality: PersonalitySettings,
+    pub memory: MemorySettings,
 }
 
 impl Settings {

@@ -11,9 +11,14 @@ use teloxide::{
 use crate::{
     adapters::timeweb_client::TimewebClient,
     buffer::{BufferStore, BufferedMessage},
-    contracts::{BufferStorage, ChatMessage},
+    contracts::{BufferStorage, ChatMessage, Usage},
     errors::AppError,
-    tools::{GetCurrentDatetime, SendMessage, ToolContext, ToolRegistry, Wait},
+    memory::{self, MemoryStore},
+    settings::MemorySettings,
+    tools::{
+        GetCurrentDatetime, ListKnownChats, Remember, SearchMemory, SendMessage, ToolContext,
+        ToolRegistry, Wait,
+    },
 };
 
 const MODEL: &str = "deepseek/deepseek-v4-flash";
@@ -24,6 +29,8 @@ pub struct ChatBot<B> {
     bot: Bot,
     llm: TimewebClient,
     buffer: BufferStore<B>,
+    memory: MemoryStore,
+    memory_settings: MemorySettings,
     system_prompt: Arc<str>,
     tools: Arc<ToolRegistry<B>>,
 }
@@ -36,17 +43,32 @@ where
         bot: Bot,
         llm: TimewebClient,
         buffer: BufferStore<B>,
+        memory: MemoryStore,
+        memory_settings: MemorySettings,
         system_prompt: impl Into<Arc<str>>,
     ) -> Self {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(GetCurrentDatetime));
         registry.register(Arc::new(Wait));
         registry.register(Arc::new(SendMessage::new(bot.clone())));
+        registry.register(Arc::new(ListKnownChats::new(buffer.clone())));
+        registry.register(Arc::new(SearchMemory::new(
+            llm.clone(),
+            memory.clone(),
+            memory_settings.clone(),
+        )));
+        registry.register(Arc::new(Remember::new(
+            llm.clone(),
+            memory.clone(),
+            memory_settings.clone(),
+        )));
 
         Self {
             bot,
             llm,
             buffer,
+            memory,
+            memory_settings,
             system_prompt: system_prompt.into(),
             tools: Arc::new(registry),
         }
@@ -92,12 +114,15 @@ where
         };
 
         let mut final_reply: Option<ChatMessage> = None;
+        let mut last_usage = Usage::default();
 
         for i in 0..MAX_TOOL_ITERATIONS {
-            let reply = self
+            let completion = self
                 .llm
                 .chat(MODEL, &messages, &self.tools.specs())
                 .await?;
+            let reply = completion.message;
+            last_usage = completion.usage;
             let calls = reply.tool_calls.clone().unwrap_or_default();
 
             if let Some(wait_call) = calls.iter().find(|c| c.function.name == "wait") {
@@ -131,10 +156,10 @@ where
             return Ok(());
         };
 
-        self.bot.send_message(msg.chat.id, &text).await?;
+        let sent = self.bot.send_message(msg.chat.id, &text).await?;
 
         let outgoing = BufferedMessage {
-            telegram_message_id: msg.id.0,
+            telegram_message_id: sent.id.0,
             sender_id: from.id.0 as i64,
             sender_name: "bot".to_owned(),
             text,
@@ -143,6 +168,22 @@ where
         };
 
         self.buffer.push(chat_id.0, outgoing).await;
+
+        if last_usage.total_tokens >= self.memory_settings.token_threshold {
+            let llm = self.llm.clone();
+            let memory = self.memory.clone();
+            let buffer = self.buffer.clone();
+            let settings = self.memory_settings.clone();
+            let raw_chat_id = chat_id.0;
+
+            tokio::spawn(async move {
+                if let Err(err) =
+                    memory::maybe_extract(&llm, &memory, &buffer, raw_chat_id, &settings).await
+                {
+                    tracing::error!(chat_id = raw_chat_id, %err, "memory extraction failed");
+                }
+            });
+        }
 
         Ok(())
     }
