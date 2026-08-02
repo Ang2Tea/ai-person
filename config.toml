@@ -9,7 +9,7 @@ diary_dir = "diary"
 [memory]
 token_threshold = 40000
 dedup_similarity_threshold = 0.92
-search_similarity_threshold = 0.75
+search_similarity_threshold = 0.3
 search_result_limit = 3
 min_fact_length = 20
 keep_last_messages = 5

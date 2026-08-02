@@ -2,14 +2,14 @@ use crate::adapters::timeweb_client::TimewebClient;
 use crate::buffer::BufferStore;
 use crate::contracts::{BufferStorage, ChatMessage};
 use crate::errors::MemoryError;
-use crate::memory::{save_fact, MemoryStore, NewFact, Visibility};
+use crate::memory::{MemoryStore, NewFact, Visibility, save_fact};
 use crate::settings::MemorySettings;
 
 const MODEL: &str = "deepseek/deepseek-v4-flash";
 
 const EXTRACTION_INSTRUCTION: &str = include_str!("../../extraction_instruction.md");
 
-fn parse_chunk(chunk: &str) -> NewFact {
+fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
     let mut text_lines = Vec::new();
     let mut confidence = 0.0f32;
     let mut visibility = Visibility::Private;
@@ -40,6 +40,7 @@ fn parse_chunk(chunk: &str) -> NewFact {
         confidence,
         visibility,
         about_users,
+        origin_chat_id,
     }
 }
 
@@ -72,16 +73,14 @@ where
     let completion = llm.chat(MODEL, &messages, &[]).await?;
 
     if let Some(content) = completion.message.content {
-        let folder = chat_id.to_string();
-
         for chunk in content.split("---") {
-            let fact = parse_chunk(chunk);
+            let fact = parse_chunk(chunk, chat_id);
             if fact.text.len() < settings.min_fact_length {
                 continue;
             }
 
             if let Err(err) =
-                save_fact(llm, memory, &folder, fact, settings.dedup_similarity_threshold).await
+                save_fact(llm, memory, fact, settings.dedup_similarity_threshold).await
             {
                 tracing::error!(chat_id, %err, "failed to save extracted fact");
             }

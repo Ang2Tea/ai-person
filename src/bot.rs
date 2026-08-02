@@ -16,8 +16,8 @@ use crate::{
     memory::{self, MemoryStore},
     settings::MemorySettings,
     tools::{
-        GetCurrentDatetime, ListKnownChats, Remember, SearchMemory, SendMessage, ToolContext,
-        ToolRegistry, Wait,
+        GetCurrentDatetime, ListKnownChats, ReadChatHistory, Remember, SearchMemory, SendMessage,
+        ToolContext, ToolRegistry, Wait,
     },
 };
 
@@ -52,6 +52,7 @@ where
         registry.register(Arc::new(Wait));
         registry.register(Arc::new(SendMessage::new(bot.clone())));
         registry.register(Arc::new(ListKnownChats::new(buffer.clone())));
+        registry.register(Arc::new(ReadChatHistory::new(buffer.clone())));
         registry.register(Arc::new(SearchMemory::new(
             llm.clone(),
             memory.clone(),
@@ -110,6 +111,7 @@ where
 
         let ctx = ToolContext {
             chat_id,
+            user_id: from.id.0 as i64,
             buffer: self.buffer.clone(),
         };
 
@@ -117,16 +119,23 @@ where
         let mut last_usage = Usage::default();
 
         for i in 0..MAX_TOOL_ITERATIONS {
-            let completion = self
-                .llm
-                .chat(MODEL, &messages, &self.tools.specs())
-                .await?;
+            let completion = self.llm.chat(MODEL, &messages, &self.tools.specs()).await?;
             let reply = completion.message;
             last_usage = completion.usage;
             let calls = reply.tool_calls.clone().unwrap_or_default();
 
+            if calls.is_empty() {
+                tracing::debug!(chat_id = chat_id.0, iteration = i, "model requested no tools");
+            } else {
+                let names: Vec<&str> = calls.iter().map(|c| c.function.name.as_str()).collect();
+                tracing::debug!(chat_id = chat_id.0, iteration = i, tools = ?names, "model requested tool calls");
+            }
+
             if let Some(wait_call) = calls.iter().find(|c| c.function.name == "wait") {
-                tracing::debug!(chat_id = chat_id.0, "model chose to wait, ending turn silently");
+                tracing::debug!(
+                    chat_id = chat_id.0,
+                    "model chose to wait, ending turn silently"
+                );
                 self.tools.dispatch(wait_call, &ctx).await;
                 return Ok(());
             }
@@ -152,7 +161,10 @@ where
             }
         }
 
-        let Some(text) = final_reply.and_then(|r| r.content).filter(|t| !t.is_empty()) else {
+        let Some(text) = final_reply
+            .and_then(|r| r.content)
+            .filter(|t| !t.is_empty())
+        else {
             return Ok(());
         };
 

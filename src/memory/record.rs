@@ -33,6 +33,7 @@ pub struct NewFact {
     pub confidence: f32,
     pub visibility: Visibility,
     pub about_users: Vec<i64>,
+    pub origin_chat_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +42,7 @@ pub struct MemoryRecord {
     pub confidence: f32,
     pub visibility: Visibility,
     pub about_users: Vec<i64>,
+    pub origin_chat_id: i64,
     pub last_used: Option<DateTime<Utc>>,
     pub usage_count: u32,
     pub embedding: Vec<f32>,
@@ -53,6 +55,7 @@ impl MemoryRecord {
         confidence: f32,
         visibility: Visibility,
         about_users: Vec<i64>,
+        origin_chat_id: i64,
         embedding: Vec<f32>,
     ) -> Self {
         Self {
@@ -60,6 +63,7 @@ impl MemoryRecord {
             confidence,
             visibility,
             about_users,
+            origin_chat_id,
             last_used: None,
             usage_count: 0,
             embedding,
@@ -88,6 +92,10 @@ impl MemoryRecord {
             ),
         );
         mapping.insert(
+            Value::String("origin_chat_id".into()),
+            Value::Number(self.origin_chat_id.into()),
+        );
+        mapping.insert(
             Value::String("lastUsed".into()),
             Value::String(
                 self.last_used
@@ -109,8 +117,8 @@ impl MemoryRecord {
             ),
         );
 
-        let yaml =
-            serde_yaml::to_string(&Value::Mapping(mapping)).expect("memory record frontmatter is always representable as yaml");
+        let yaml = serde_yaml::to_string(&Value::Mapping(mapping))
+            .expect("memory record frontmatter is always representable as yaml");
 
         format!("---\n{yaml}---\n\n{}\n", self.text)
     }
@@ -143,6 +151,7 @@ impl MemoryRecord {
             .and_then(Value::as_sequence)
             .map(|seq| seq.iter().filter_map(Value::as_i64).collect())
             .unwrap_or_default();
+        let origin_chat_id = get("origin_chat_id").and_then(Value::as_i64).unwrap_or(0);
         let last_used = match get("lastUsed").and_then(Value::as_str) {
             Some("never") | None => None,
             Some(raw) => Some(
@@ -154,7 +163,12 @@ impl MemoryRecord {
         let usage_count = get("usageCount").and_then(Value::as_u64).unwrap_or(0) as u32;
         let embedding = get("embedding")
             .and_then(Value::as_sequence)
-            .map(|seq| seq.iter().filter_map(Value::as_f64).map(|v| v as f32).collect())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(Value::as_f64)
+                    .map(|v| v as f32)
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok(Self {
@@ -162,6 +176,7 @@ impl MemoryRecord {
             confidence,
             visibility,
             about_users,
+            origin_chat_id,
             last_used,
             usage_count,
             embedding,
@@ -181,6 +196,7 @@ mod tests {
             1.0,
             Visibility::Private,
             vec![123456789],
+            341832691,
             vec![0.0123, -0.0456, 0.0789],
         );
 
@@ -192,7 +208,7 @@ mod tests {
 
     #[test]
     fn never_used_round_trips_as_none() {
-        let record = MemoryRecord::new("факт", 0.0, Visibility::Public, vec![], vec![1.0]);
+        let record = MemoryRecord::new("факт", 0.0, Visibility::Public, vec![], 5113698655, vec![1.0]);
         let markdown = record.to_markdown();
         let parsed = MemoryRecord::from_markdown(&markdown).expect("valid frontmatter");
         assert_eq!(parsed.last_used, None);

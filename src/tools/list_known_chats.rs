@@ -30,8 +30,8 @@ where
             "function": {
                 "name": "list_known_chats",
                 "description": "Показывает список чатов Telegram, с которыми ты уже когда-либо \
-общался (id и последний известный собеседник в этом чате). Используй перед `send_message` с \
-явным `chat_id`, чтобы выбрать, куда именно писать — по памяти id чатов не угадать.",
+        общался (id и последний известный собеседник в этом чате). Используй перед `send_message` с \
+        явным `chat_id`, чтобы выбрать, куда именно писать — по памяти id чатов не угадать.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -61,7 +61,11 @@ where
                     .await
                     .and_then(|b| b.last_sender_name().map(str::to_owned))
                     .unwrap_or_else(|| "неизвестно".to_owned());
-                let kind = if chat_id < 0 { "группа" } else { "личный чат" };
+                let kind = if chat_id < 0 {
+                    "группа"
+                } else {
+                    "личный чат"
+                };
                 lines.push(format!("{chat_id}: {kind}, последний собеседник — {label}"));
             }
 

@@ -34,9 +34,9 @@ impl<B: Send + Sync + 'static> Tool<B> for Remember {
             "function": {
                 "name": "remember",
                 "description": "Сохранить важный факт в долгосрочную память прямо сейчас, \
-не дожидаясь фоновой архивации. Используй по прямой просьбе собеседника запомнить что-то, \
-или когда сам считаешь факт важным и не хочешь полагаться на фоновую выгрузку — не для \
-рутинной информации на каждую реплику.",
+        не дожидаясь фоновой архивации. Используй по прямой просьбе собеседника запомнить что-то, \
+        или когда сам считаешь факт важным и не хочешь полагаться на фоновую выгрузку — не для \
+        рутинной информации на каждую реплику.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -95,22 +95,16 @@ impl<B: Send + Sync + 'static> Tool<B> for Remember {
                 .map(|items| items.iter().filter_map(Value::as_i64).collect())
                 .unwrap_or_default();
 
-            let folder = chat_id.to_string();
             let fact = NewFact {
                 text,
                 confidence,
                 visibility,
                 about_users,
+                origin_chat_id: chat_id,
             };
-            let saved = memory::save_fact(
-                &llm,
-                &memory,
-                &folder,
-                fact,
-                settings.dedup_similarity_threshold,
-            )
-            .await
-            .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let saved = memory::save_fact(&llm, &memory, fact, settings.dedup_similarity_threshold)
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
 
             Ok(if saved {
                 "запомнено".to_owned()

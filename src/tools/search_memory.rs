@@ -25,6 +25,15 @@ impl SearchMemory {
     }
 }
 
+/// Запись видна из чата `chat_id` от лица пользователя `user_id`, если она
+/// публичная, либо возникла в этом же чате, либо лично про этого пользователя
+/// (даже если приватная и из другого чата).
+fn is_visible(record: &MemoryRecord, chat_id: i64, user_id: i64) -> bool {
+    record.visibility == Visibility::Public
+        || record.origin_chat_id == chat_id
+        || record.about_users.contains(&user_id)
+}
+
 impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
     fn name(&self) -> &str {
         "search_memory"
@@ -35,7 +44,7 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
             "type": "function",
             "function": {
                 "name": "search_memory",
-                "description": "Найти в долгосрочной памяти факты, релевантные запросу.",
+                "description": "Найти в долгосрочной памяти факты, релевантные запросу. Ищет по всему архиву личности, не только по текущему чату — видны публичные факты, факты из этого же чата и приватные факты лично о текущем собеседнике.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -59,6 +68,7 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
         let memory = self.memory.clone();
         let settings = self.settings.clone();
         let chat_id = ctx.chat_id.0;
+        let user_id = ctx.user_id;
 
         Box::pin(async move {
             let query = args
@@ -67,51 +77,58 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
                 .ok_or_else(|| ToolError::Failed("missing 'query' argument".to_owned()))?
                 .to_owned();
 
+            tracing::debug!(chat_id, user_id, query = %query, "search_memory: starting search");
+
             let query_embedding = llm
                 .embed(memory::EMBEDDING_MODEL, &query)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-            let own_folder = chat_id.to_string();
-            let is_group = chat_id < 0;
+            let records = memory.list_all().map_err(|e| ToolError::Failed(e.to_string()))?;
+            tracing::debug!(chat_id, record_count = records.len(), "search_memory: loaded records total");
 
-            let mut matches: Vec<(f32, String, MemoryRecord)> = Vec::new();
-            for folder in memory.candidate_folders(chat_id) {
-                let records = memory
-                    .list(&folder)
-                    .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let mut matches: Vec<(f32, MemoryRecord)> = Vec::new();
+            for record in records {
+                if !is_visible(&record, chat_id, user_id) {
+                    tracing::debug!(
+                        chat_id,
+                        record_id = %record.id,
+                        origin_chat_id = record.origin_chat_id,
+                        "search_memory: skipped record (not visible from here)"
+                    );
+                    continue;
+                }
 
-                for record in records {
-                    // В группе записи из чужих (не собственной групповой) папок,
-                    // помеченные private, не должны попадать в кандидаты вообще —
-                    // фильтрация в коде, не полагаемся на модель.
-                    if is_group && folder != own_folder && record.visibility == Visibility::Private
-                    {
-                        continue;
-                    }
-
-                    let score = memory::cosine_similarity(&record.embedding, &query_embedding);
-                    if score >= settings.search_similarity_threshold {
-                        matches.push((score, folder.clone(), record));
-                    }
+                let score = memory::cosine_similarity(&record.embedding, &query_embedding);
+                tracing::debug!(
+                    chat_id,
+                    record_id = %record.id,
+                    score,
+                    threshold = settings.search_similarity_threshold,
+                    "search_memory: scored record"
+                );
+                if score >= settings.search_similarity_threshold {
+                    matches.push((score, record));
                 }
             }
 
             matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
             matches.truncate(settings.search_result_limit);
 
+            tracing::debug!(chat_id, match_count = matches.len(), "search_memory: finished");
+
             if matches.is_empty() {
                 return Ok("в памяти ничего подходящего не найдено".to_owned());
             }
 
             let mut result = String::new();
-            for (_, folder, mut record) in matches {
+            for (_, mut record) in matches {
                 result.push_str(record.text.trim());
                 result.push('\n');
 
                 record.usage_count += 1;
                 record.last_used = Some(Utc::now());
-                if let Err(err) = memory.touch(&folder, &record) {
+                if let Err(err) = memory.touch(&record) {
                     tracing::warn!(%err, "failed to update memory record usage stats");
                 }
             }

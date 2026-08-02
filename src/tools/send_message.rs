@@ -34,8 +34,8 @@ where
             "function": {
                 "name": "send_message",
                 "description": "Отправить сообщение в Telegram. По умолчанию — в текущий чат, \
-но можно явно указать `chat_id`, чтобы отправить в другой известный чат (список — через \
-`list_known_chats`).",
+        но можно явно указать `chat_id`, чтобы отправить в другой известный чат (список — через \
+        `list_known_chats`).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -87,7 +87,9 @@ where
             if let Some(message_id) = reply_to_message_id {
                 request = request.reply_parameters(ReplyParameters::new(message_id));
             }
-            let sent = request.await.map_err(|e| ToolError::Failed(e.to_string()))?;
+            let sent = request
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
 
             buffer
                 .push(

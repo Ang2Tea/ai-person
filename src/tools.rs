@@ -1,6 +1,7 @@
 mod context;
 mod get_current_datetime;
 mod list_known_chats;
+mod read_chat_history;
 mod remember;
 mod search_memory;
 mod send_message;
@@ -9,6 +10,7 @@ mod wait;
 pub use context::ToolContext;
 pub use get_current_datetime::GetCurrentDatetime;
 pub use list_known_chats::ListKnownChats;
+pub use read_chat_history::ReadChatHistory;
 pub use remember::Remember;
 pub use search_memory::SearchMemory;
 pub use send_message::SendMessage;
@@ -59,15 +61,22 @@ impl<B> ToolRegistry<B> {
 
     pub async fn dispatch(&self, call: &ToolCall, ctx: &ToolContext<B>) -> String {
         let Some(tool) = self.tools.get(&call.function.name) else {
+            tracing::error!(tool = %call.function.name, "unknown tool requested by model");
             return format!("error: unknown tool '{}'", call.function.name);
         };
         let args: Value = match serde_json::from_str(&call.function.arguments) {
             Ok(v) => v,
-            Err(e) => return format!("error: bad arguments json: {e}"),
+            Err(err) => {
+                tracing::error!(tool = %call.function.name, %err, arguments = %call.function.arguments, "bad tool arguments json");
+                return format!("error: bad arguments json: {err}");
+            }
         };
         match tool.call(args, ctx).await {
             Ok(s) => s,
-            Err(e) => format!("error: {e}"),
+            Err(err) => {
+                tracing::error!(tool = %call.function.name, %err, "tool call failed");
+                format!("error: {err}")
+            }
         }
     }
 }
