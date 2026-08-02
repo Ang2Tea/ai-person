@@ -1,0 +1,101 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio::sync::RwLock;
+
+use crate::contracts::BufferStorage;
+use crate::errors::BufferError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BufferedMessage {
+    pub telegram_message_id: i32,
+    pub sender_id: i64,
+    pub sender_name: String,
+    pub text: String,
+    pub timestamp: DateTime<Utc>,
+    pub is_bot: bool, // true для собственных ответов бота
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChatBuffer {
+    messages: VecDeque<BufferedMessage>,
+}
+
+impl ChatBuffer {
+    pub fn push(&mut self, msg: BufferedMessage) {
+        self.messages.push_back(msg);
+    }
+
+    pub fn to_transcript(&self) -> String {
+        self.messages
+            .iter()
+            .map(|m| {
+                let who = if m.is_bot { "Бот" } else { &m.sender_name };
+                format!("[{}] {}: {}", m.timestamp.format("%H:%M"), who, m.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+pub struct BufferStore<B> {
+    storage: B,
+    buffers: Arc<RwLock<HashMap<i64, ChatBuffer>>>,
+    dirty: Arc<AtomicBool>,
+}
+
+impl<B> BufferStore<B>
+where
+    B: BufferStorage + Clone + Send + Sync + 'static,
+{
+    pub fn new(storage: B) -> Result<Self, BufferError> {
+        let buffers = storage.load()?;
+        let store = Self {
+            storage,
+            buffers: Arc::new(RwLock::new(buffers)),
+            dirty: Arc::new(AtomicBool::new(false)),
+        };
+        store.spawn_flush_task();
+        Ok(store)
+    }
+
+    fn spawn_flush_task(&self) {
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
+            loop {
+                ticker.tick().await;
+                if let Err(err) = store.flush().await {
+                    tracing::error!(%err, "Can`t flush chat buffer to storage");
+                }
+            }
+        });
+    }
+
+    pub async fn push(&self, chat_id: i64, msg: BufferedMessage) {
+        let mut buffers = self.buffers.write().await;
+        buffers.entry(chat_id).or_default().push(msg);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    pub async fn get(&self, chat_id: i64) -> Option<ChatBuffer> {
+        let buffers = self.buffers.read().await;
+        buffers.get(&chat_id).cloned()
+    }
+
+    pub async fn flush(&self) -> Result<(), BufferError> {
+        if !self.dirty.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let buffers = self.buffers.read().await;
+        self.storage.save(&buffers)?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
+    }
+}
