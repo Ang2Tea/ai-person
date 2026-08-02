@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::contracts::ToolCall;
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatResponse {
@@ -25,12 +27,15 @@ pub struct Choice {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
-    pub content: String,
+    #[serde(default)]
+    pub content: Option<String>,
     pub role: String,
-    #[serde(rename = "reasoning_content")]
+    #[serde(rename = "reasoning_content", default)]
     pub reasoning_content: String,
-    #[serde(rename = "provider_specific_fields")]
+    #[serde(rename = "provider_specific_fields", default)]
     pub provider_specific_fields: ProviderSpecificFields,
+    #[serde(rename = "tool_calls", default)]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

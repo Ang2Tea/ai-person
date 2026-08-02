@@ -2,8 +2,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("Can`t create reqwest client")]
-    ReqwestError(String),
+    #[error(transparent)]
+    Llm(#[from] LlmError),
+    #[error(transparent)]
+    Telegram(#[from] teloxide::RequestError),
 }
 
 #[derive(Debug, Error)]

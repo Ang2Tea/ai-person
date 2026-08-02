@@ -1,23 +1,16 @@
-use std::{env, error::Error};
+use std::env;
 
 use ai_chat_person::{
     adapters::{local_file_storage::LocalFileStorage, timeweb_client::TimewebClient},
-    buffer::{BufferStore, BufferedMessage, ChatBuffer},
-    contracts::{BufferStorage, ChatMessage},
+    bot::ChatBot,
+    buffer::BufferStore,
 };
-use chrono::Utc;
-use teloxide::{
-    Bot,
-    dispatching::dialogue::GetChatId,
-    requests::{Requester, ResponseResult},
-    types::{ChatId, Message},
-};
+use teloxide::Bot;
 
 const SYSTEM_PROMPT: &str = include_str!("../SYSTEM_PROMPT.md");
-const MODEL: &str = "deepseek/deepseek-v4-flash";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_path(".env");
 
     let bot_token = env::var("BOT_TOKEN")?;
@@ -29,9 +22,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let buffer_storage = LocalFileStorage::new("data.json");
     let buffer = BufferStore::new(buffer_storage)?;
 
-    let repl_buffer = buffer.clone();
+    let chat_bot = ChatBot::new(timeweb_client, buffer.clone(), SYSTEM_PROMPT);
+
     teloxide::repl(bot.clone(), move |bot, msg| {
-        answer(timeweb_client.clone(), repl_buffer.clone(), bot, msg)
+        let chat_bot = chat_bot.clone();
+        async move {
+            if let Err(err) = chat_bot.handle_message(bot, msg).await {
+                tracing::error!(%err, "Error handling message");
+            }
+            Ok(())
+        }
     })
     .await;
 
@@ -40,83 +40,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
-}
-
-async fn answer<B>(
-    ai_client: TimewebClient,
-    buffer: BufferStore<B>,
-    bot: Bot,
-    msg: Message,
-) -> ResponseResult<()>
-where
-    B: BufferStorage + Clone + Send + Sync + 'static,
-{
-    let Some(chat_id) = msg.chat_id() else {
-        tracing::error!("Can`t get chat id");
-        return Ok(());
-    };
-
-    let Some(text) = msg.text() else {
-        tracing::debug!("Skipping non-text message");
-        return Ok(());
-    };
-
-    let Some(from) = &msg.from else {
-        tracing::error!("Can`t get message sender");
-        return Ok(());
-    };
-
-    let incoming = BufferedMessage {
-        telegram_message_id: msg.id.0,
-        sender_id: ChatId::from(from.id).0,
-        sender_name: from.first_name.clone(),
-        text: text.to_owned(),
-        timestamp: Utc::now(),
-        is_bot: false,
-    };
-
-    buffer.push(chat_id.0, incoming).await;
-
-    let Some(chat_buffer) = buffer.get(chat_id.0).await else {
-        tracing::error!("Can`t get chat buffer");
-        return Ok(());
-    };
-
-    let messages = build_request_messages(SYSTEM_PROMPT, &chat_buffer);
-
-    let reply = match ai_client.chat(MODEL, &messages).await {
-        Ok(reply) => reply,
-        Err(err) => {
-            tracing::error!(%err, "Error from ai client");
-            return Ok(());
-        }
-    };
-
-    bot.send_message(msg.chat.id, &reply).await?;
-
-    let outgoing = BufferedMessage {
-        telegram_message_id: msg.id.0,
-        sender_id: from.id.0 as i64,
-        sender_name: "bot".to_owned(),
-        text: reply,
-        timestamp: Utc::now(),
-        is_bot: true,
-    };
-
-    buffer.push(chat_id.0, outgoing).await;
-
-    Ok(())
-}
-
-pub fn build_request_messages(system_prompt: &str, buffer: &ChatBuffer) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage {
-            role: "system".into(),
-            content: system_prompt.into(),
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: buffer.to_transcript(),
-        },
-    ]
 }

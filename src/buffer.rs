@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::contracts::BufferStorage;
+use crate::contracts::{BufferStorage, ChatMessage};
 use crate::errors::BufferError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +38,13 @@ impl ChatBuffer {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    pub fn to_request_messages(&self, system_prompt: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::system(system_prompt),
+            ChatMessage::user(self.to_transcript()),
+        ]
     }
 }
 

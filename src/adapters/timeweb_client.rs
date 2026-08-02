@@ -1,10 +1,12 @@
 mod models;
 mod timeweb_models;
 
+use serde_json::Value;
+
 use crate::{
     adapters::timeweb_client::{models::ChatRequest, timeweb_models::ChatResponse},
     contracts::ChatMessage,
-    errors::{AppError, LlmError},
+    errors::LlmError,
 };
 
 #[derive(Clone)]
@@ -17,11 +19,10 @@ pub struct TimewebClient {
 const TEMPERATURE: f32 = 0.7;
 
 impl TimewebClient {
-    pub fn try_new(api_key: impl Into<String>) -> Result<Self, AppError> {
+    pub fn try_new(api_key: impl Into<String>) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|_e| AppError::ReqwestError("failed to build reqwest client".to_owned()))?;
+            .build()?;
 
         Ok(Self {
             http,
@@ -30,10 +31,16 @@ impl TimewebClient {
         })
     }
 
-    pub async fn chat(&self, model: &str, messages: &[ChatMessage]) -> Result<String, LlmError> {
+    pub async fn chat(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[Value],
+    ) -> Result<ChatMessage, LlmError> {
         let req = ChatRequest {
             model,
             messages,
+            tools,
             temperature: TEMPERATURE,
         };
 
@@ -51,7 +58,12 @@ impl TimewebClient {
         resp.choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .map(|c| ChatMessage {
+                role: c.message.role,
+                content: c.message.content,
+                tool_calls: c.message.tool_calls,
+                tool_call_id: None,
+            })
             .ok_or(LlmError::EmptyResponse)
     }
 }
