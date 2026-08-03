@@ -6,5 +6,6 @@ pub mod consolidation;
 pub mod contracts;
 pub mod errors;
 pub mod memory;
+pub mod proactive;
 pub mod settings;
 pub mod tools;

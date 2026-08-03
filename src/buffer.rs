@@ -68,6 +68,12 @@ impl ChatBuffer {
             .find(|m| !m.is_bot)
             .map(|m| m.sender_name.as_str())
     }
+
+    /// Время последнего события в чате (включая собственные ответы бота) — по
+    /// нему проактивный воркер определяет, не идёт ли сейчас живой разговор.
+    pub fn last_activity(&self) -> Option<DateTime<Utc>> {
+        self.messages.back().map(|m| m.timestamp)
+    }
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);

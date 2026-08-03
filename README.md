@@ -33,9 +33,10 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 ```
 src/
   main.rs                — сборка зависимостей, цикл поллинга (Message/EditedMessage/MessageReaction)
-  bot.rs                 — ChatBot: разбор апдейтов, общий tool-calling цикл (run_turn)
+  bot.rs                 — ChatBot: разбор апдейтов, общий tool-calling цикл (run_turn/run_proactive)
   chat_locks.rs           — per-chat мьютекс, сериализует обработку одного чата
   consolidation.rs        — ночная консолидация дневника + генерация insights
+  proactive.rs            — периодический воркер: даёт модели шанс написать первой
   settings.rs             — конфиг из config.toml
   contracts.rs            — формат обмена с LLM (OpenAI-подобный)
   buffer.rs               — краткосрочная память (буфер переписки по чатам)
@@ -59,6 +60,11 @@ config.toml               — путь к активной личности, м�
 похожие факты дневника в один (силами LLM), удаляет давно не использовавшиеся факты и
 пересобирает `insights.md` из публичных фактов — обновление подхватывается ботом сразу, без
 перезапуска.
+
+С интервалом `[proactive].interval_minutes` (`config.toml`) фоновый воркер (`proactive.rs`)
+выбирает случайный известный чат, в котором давно (`min_inactivity_minutes`) не было сообщений —
+живой разговор в выборку не попадает — и с шансом `probability` даёт модели возможность написать
+туда первой; решение писать или промолчать (`wait`) остаётся за моделью.
 
 `personalities/` и `.env` — в `.gitignore`, реальные диалоги и токены в репозиторий не попадают.
 

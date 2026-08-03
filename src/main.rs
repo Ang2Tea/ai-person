@@ -6,6 +6,7 @@ use ai_chat_person::{
     buffer::BufferStore,
     consolidation,
     memory::MemoryStore,
+    proactive,
     settings::Settings,
 };
 use futures::StreamExt;
@@ -77,6 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         system_prompt,
         insights,
     );
+
+    proactive::spawn_task(chat_bot.clone(), buffer.clone(), settings.proactive);
 
     tracing::info!("Starting bot");
 

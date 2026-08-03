@@ -57,10 +57,18 @@ pub struct MemorySettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ProactiveSettings {
+    pub interval_minutes: u64,
+    pub probability: f32,
+    pub min_inactivity_minutes: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     pub personality: PersonalitySettings,
     pub memory: MemorySettings,
     pub llm: LlmSettings,
+    pub proactive: ProactiveSettings,
 }
 
 impl Settings {
