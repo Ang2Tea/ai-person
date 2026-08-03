@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod bot;
 pub mod buffer;
+pub mod chat_locks;
 pub mod contracts;
 pub mod errors;
 pub mod memory;

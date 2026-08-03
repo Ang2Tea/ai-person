@@ -5,9 +5,13 @@ use crate::errors::MemoryError;
 use crate::memory::{MemoryStore, NewFact, Visibility, save_fact};
 use crate::settings::MemorySettings;
 
-const MODEL: &str = "deepseek/deepseek-v4-flash";
-
-const EXTRACTION_INSTRUCTION: &str = include_str!("../../extraction_instruction.md");
+const EXTRACTION_SYSTEM_PROMPT: &str = include_str!("../../prompts/extraction_system.md");
+const EXTRACTION_INSTRUCTION: &str = include_str!("../../prompts/extraction_instruction.md");
+/// Маркер, разделяющий отдельные факты в ответе модели — должен совпадать с тем,
+/// что просит использовать `EXTRACTION_INSTRUCTION`. Не `"---"`: это слишком
+/// частая в обычном markdown/LLM-тексте последовательность, факт мог бы
+/// случайно разбиться на куски, если бы содержал её сам.
+const FACT_SEPARATOR: &str = "===FACT===";
 
 fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
     let mut text_lines = Vec::new();
@@ -53,6 +57,8 @@ pub async fn maybe_extract<B>(
     buffer: &BufferStore<B>,
     chat_id: i64,
     settings: &MemorySettings,
+    model: &str,
+    embedding_model: &str,
 ) -> Result<(), MemoryError>
 where
     B: BufferStorage + Clone + Send + Sync + 'static,
@@ -63,24 +69,27 @@ where
 
     let transcript = chat_buffer.to_transcript();
     let messages = vec![
-        ChatMessage::system(
-            "Ты — аналитик, который выделяет факты из истории переписки для долгосрочного \
-             архива. Отвечай только фактами и метаданными, без художественного текста.",
-        ),
+        ChatMessage::system(EXTRACTION_SYSTEM_PROMPT.trim()),
         ChatMessage::user(format!("{transcript}\n\n{EXTRACTION_INSTRUCTION}")),
     ];
 
-    let completion = llm.chat(MODEL, &messages, &[]).await?;
+    let completion = llm.chat(model, &messages, &[]).await?;
 
     if let Some(content) = completion.message.content {
-        for chunk in content.split("---") {
+        for chunk in content.split(FACT_SEPARATOR) {
             let fact = parse_chunk(chunk, chat_id);
             if fact.text.len() < settings.min_fact_length {
                 continue;
             }
 
-            if let Err(err) =
-                save_fact(llm, memory, fact, settings.dedup_similarity_threshold).await
+            if let Err(err) = save_fact(
+                llm,
+                memory,
+                fact,
+                settings.dedup_similarity_threshold,
+                embedding_model,
+            )
+            .await
             {
                 tracing::error!(chat_id, %err, "failed to save extracted fact");
             }

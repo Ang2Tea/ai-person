@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{buffer::ChatBuffer, errors::BufferError};
 
 pub trait BufferStorage: Send + Sync {
-    fn load(&self) -> Result<HashMap<i64, ChatBuffer>, BufferError>;
-    fn save(&self, buffers: &HashMap<i64, ChatBuffer>) -> Result<(), BufferError>;
+    fn load(&self) -> impl Future<Output = Result<HashMap<i64, ChatBuffer>, BufferError>> + Send;
+    fn save(
+        &self,
+        buffers: &HashMap<i64, ChatBuffer>,
+    ) -> impl Future<Output = Result<(), BufferError>> + Send;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

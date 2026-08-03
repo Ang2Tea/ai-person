@@ -8,15 +8,16 @@ use teloxide::types::{ChatId, MessageId, ReplyParameters};
 use crate::buffer::BufferedMessage;
 use crate::contracts::BufferStorage;
 use crate::errors::ToolError;
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, is_chat_access_allowed};
 
 pub struct SendMessage {
     bot: teloxide::Bot,
+    bot_user_id: i64,
 }
 
 impl SendMessage {
-    pub fn new(bot: teloxide::Bot) -> Self {
-        Self { bot }
+    pub fn new(bot: teloxide::Bot, bot_user_id: i64) -> Self {
+        Self { bot, bot_user_id }
     }
 }
 
@@ -64,6 +65,7 @@ where
         ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         let bot = self.bot.clone();
+        let bot_user_id = self.bot_user_id;
         let current_chat_id = ctx.chat_id;
         let buffer = ctx.buffer.clone();
 
@@ -78,6 +80,16 @@ where
                 .and_then(Value::as_i64)
                 .map(ChatId)
                 .unwrap_or(current_chat_id);
+
+            if !is_chat_access_allowed(current_chat_id.0, chat_id.0) {
+                tracing::warn!(
+                    current_chat_id = current_chat_id.0,
+                    requested_chat_id = chat_id.0,
+                    "model tried to send_message into a chat it isn't allowed to reach"
+                );
+                return Ok("нет доступа для отправки в этот чат".to_owned());
+            }
+
             let reply_to_message_id = args
                 .get("reply_to_message_id")
                 .and_then(Value::as_i64)
@@ -96,7 +108,7 @@ where
                     chat_id.0,
                     BufferedMessage {
                         telegram_message_id: sent.id.0,
-                        sender_id: chat_id.0,
+                        sender_id: bot_user_id,
                         sender_name: "bot".to_owned(),
                         text,
                         timestamp: Utc::now(),

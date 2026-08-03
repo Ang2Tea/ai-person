@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::adapters::timeweb_client::TimewebClient;
 use crate::errors::ToolError;
@@ -11,14 +12,21 @@ pub struct Remember {
     llm: TimewebClient,
     memory: MemoryStore,
     settings: MemorySettings,
+    embedding_model: Arc<str>,
 }
 
 impl Remember {
-    pub fn new(llm: TimewebClient, memory: MemoryStore, settings: MemorySettings) -> Self {
+    pub fn new(
+        llm: TimewebClient,
+        memory: MemoryStore,
+        settings: MemorySettings,
+        embedding_model: Arc<str>,
+    ) -> Self {
         Self {
             llm,
             memory,
             settings,
+            embedding_model,
         }
     }
 }
@@ -73,6 +81,7 @@ impl<B: Send + Sync + 'static> Tool<B> for Remember {
         let llm = self.llm.clone();
         let memory = self.memory.clone();
         let settings = self.settings.clone();
+        let embedding_model = self.embedding_model.clone();
         let chat_id = ctx.chat_id.0;
 
         Box::pin(async move {
@@ -102,9 +111,15 @@ impl<B: Send + Sync + 'static> Tool<B> for Remember {
                 about_users,
                 origin_chat_id: chat_id,
             };
-            let saved = memory::save_fact(&llm, &memory, fact, settings.dedup_similarity_threshold)
-                .await
-                .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let saved = memory::save_fact(
+                &llm,
+                &memory,
+                fact,
+                settings.dedup_similarity_threshold,
+                &embedding_model,
+            )
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
 
             Ok(if saved {
                 "запомнено".to_owned()

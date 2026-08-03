@@ -1,3 +1,4 @@
+mod access;
 mod context;
 mod get_current_datetime;
 mod list_known_chats;
@@ -7,6 +8,7 @@ mod search_memory;
 mod send_message;
 mod wait;
 
+pub use access::is_chat_access_allowed;
 pub use context::ToolContext;
 pub use get_current_datetime::GetCurrentDatetime;
 pub use list_known_chats::ListKnownChats;

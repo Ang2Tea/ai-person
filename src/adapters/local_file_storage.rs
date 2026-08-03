@@ -14,17 +14,33 @@ impl LocalFileStorage {
 }
 
 impl BufferStorage for LocalFileStorage {
-    fn load(&self) -> Result<HashMap<i64, ChatBuffer>, BufferError> {
-        if !self.path.exists() {
-            return Ok(HashMap::new());
-        }
-        let raw = fs::read_to_string(&self.path)?;
-        Ok(serde_json::from_str(&raw)?)
+    async fn load(&self) -> Result<HashMap<i64, ChatBuffer>, BufferError> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            if !path.exists() {
+                return Ok(HashMap::new());
+            }
+            let raw = fs::read_to_string(&path)?;
+            Ok(serde_json::from_str(&raw)?)
+        })
+        .await
+        .expect("blocking task panicked")
     }
 
-    fn save(&self, buffers: &HashMap<i64, ChatBuffer>) -> Result<(), BufferError> {
+    async fn save(&self, buffers: &HashMap<i64, ChatBuffer>) -> Result<(), BufferError> {
+        let path = self.path.clone();
         let json = serde_json::to_string_pretty(buffers)?;
-        fs::write(&self.path, json)?;
-        Ok(())
+
+        tokio::task::spawn_blocking(move || {
+            // Пишем во временный файл рядом и переименовываем поверх целевого —
+            // переименование в пределах одной файловой системы атомарно, так что
+            // падение процесса посреди записи не оставит битый working_memory.json.
+            let tmp_path = PathBuf::from(format!("{}.tmp", path.display()));
+            fs::write(&tmp_path, json)?;
+            fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })
+        .await
+        .expect("blocking task panicked")
     }
 }

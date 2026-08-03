@@ -2,6 +2,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::adapters::timeweb_client::TimewebClient;
 use crate::errors::ToolError;
@@ -13,14 +14,21 @@ pub struct SearchMemory {
     llm: TimewebClient,
     memory: MemoryStore,
     settings: MemorySettings,
+    embedding_model: Arc<str>,
 }
 
 impl SearchMemory {
-    pub fn new(llm: TimewebClient, memory: MemoryStore, settings: MemorySettings) -> Self {
+    pub fn new(
+        llm: TimewebClient,
+        memory: MemoryStore,
+        settings: MemorySettings,
+        embedding_model: Arc<str>,
+    ) -> Self {
         Self {
             llm,
             memory,
             settings,
+            embedding_model,
         }
     }
 }
@@ -67,6 +75,7 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
         let llm = self.llm.clone();
         let memory = self.memory.clone();
         let settings = self.settings.clone();
+        let embedding_model = self.embedding_model.clone();
         let chat_id = ctx.chat_id.0;
         let user_id = ctx.user_id;
 
@@ -80,11 +89,20 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
             tracing::debug!(chat_id, user_id, query = %query, "search_memory: starting search");
 
             let query_embedding = llm
-                .embed(memory::EMBEDDING_MODEL, &query)
+                .embed(&embedding_model, &query)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-            let records = memory.list_all().map_err(|e| ToolError::Failed(e.to_string()))?;
+            let own_prefix = format!("{chat_id}--");
+            let about_me_token = format!(",{user_id},");
+            let records = memory
+                .list_filtered(move |name| {
+                    name.starts_with(&own_prefix)
+                        || name.contains("--public--")
+                        || name.contains(&about_me_token)
+                })
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
             tracing::debug!(chat_id, record_count = records.len(), "search_memory: loaded records total");
 
             let mut matches: Vec<(f32, MemoryRecord)> = Vec::new();
@@ -123,12 +141,16 @@ impl<B: Send + Sync + 'static> Tool<B> for SearchMemory {
 
             let mut result = String::new();
             for (_, mut record) in matches {
-                result.push_str(record.text.trim());
+                result.push_str(&format!(
+                    "[уверенность: {}] {}",
+                    record.confidence,
+                    record.text.trim()
+                ));
                 result.push('\n');
 
                 record.usage_count += 1;
                 record.last_used = Some(Utc::now());
-                if let Err(err) = memory.touch(&record) {
+                if let Err(err) = memory.touch(&record).await {
                     tracing::warn!(%err, "failed to update memory record usage stats");
                 }
             }

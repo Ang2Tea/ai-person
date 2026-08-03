@@ -7,7 +7,7 @@ use ai_chat_person::{
     memory::MemoryStore,
     settings::Settings,
 };
-use teloxide::Bot;
+use teloxide::{Bot, requests::Requester};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,21 +29,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bot_token = env::var("BOT_TOKEN")?;
     let bot: Bot = Bot::new(bot_token);
+    let bot_user_id = bot.get_me().await?.id.0 as i64;
 
     let timeweb_token = env::var("TIMEWEB_KEY")?;
     let timeweb_client = TimewebClient::try_new(&timeweb_token)?;
 
     let buffer_storage = LocalFileStorage::new(settings.personality.working_memory_path());
-    let buffer = BufferStore::new(buffer_storage)?;
+    let buffer = BufferStore::new(buffer_storage).await?;
 
     let system_prompt = fs::read_to_string(settings.personality.system_prompt_path())?;
     let memory = MemoryStore::new(settings.personality.diary_dir_path());
     let chat_bot = ChatBot::new(
         bot.clone(),
+        bot_user_id,
         timeweb_client,
         buffer.clone(),
         memory,
         settings.memory,
+        settings.llm.model,
+        settings.llm.embedding_model,
         system_prompt,
     );
 

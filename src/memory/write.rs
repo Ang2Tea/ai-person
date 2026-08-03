@@ -1,6 +1,5 @@
 use crate::adapters::timeweb_client::TimewebClient;
 use crate::errors::MemoryError;
-use crate::memory::EMBEDDING_MODEL;
 use crate::memory::record::{MemoryRecord, NewFact};
 use crate::memory::similarity::cosine_similarity;
 use crate::memory::store::MemoryStore;
@@ -15,13 +14,16 @@ pub async fn save_fact(
     memory: &MemoryStore,
     fact: NewFact,
     dedup_threshold: f32,
+    embedding_model: &str,
 ) -> Result<bool, MemoryError> {
-    let embedding = llm.embed(EMBEDDING_MODEL, &fact.text).await?;
+    let embedding = llm.embed(embedding_model, &fact.text).await?;
 
-    let existing = memory.list_all()?;
+    let origin_prefix = format!("{}--", fact.origin_chat_id);
+    let existing = memory
+        .list_filtered(move |name| name.starts_with(&origin_prefix))
+        .await?;
     let is_duplicate = existing
         .iter()
-        .filter(|r| r.origin_chat_id == fact.origin_chat_id)
         .any(|r| cosine_similarity(&r.embedding, &embedding) >= dedup_threshold);
 
     if is_duplicate {
@@ -36,6 +38,6 @@ pub async fn save_fact(
         fact.origin_chat_id,
         embedding,
     );
-    memory.append(&record)?;
+    memory.append(&record).await?;
     Ok(true)
 }

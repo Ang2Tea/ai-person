@@ -1,3 +1,7 @@
+[llm]
+model = "deepseek/deepseek-v4-flash"
+embedding_model = "openai/text-embedding-3-small"
+
 [personality]
 path = "personalities/default"
 

@@ -35,6 +35,12 @@ impl PersonalitySettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct LlmSettings {
+    pub model: String,
+    pub embedding_model: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct MemorySettings {
     pub token_threshold: u32,
     pub dedup_similarity_threshold: f32,
@@ -48,6 +54,7 @@ pub struct MemorySettings {
 pub struct Settings {
     pub personality: PersonalitySettings,
     pub memory: MemorySettings,
+    pub llm: LlmSettings,
 }
 
 impl Settings {

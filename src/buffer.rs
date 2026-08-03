@@ -83,8 +83,8 @@ impl<B> BufferStore<B>
 where
     B: BufferStorage + Clone + Send + Sync + 'static,
 {
-    pub fn new(storage: B) -> Result<Self, BufferError> {
-        let buffers = storage.load()?;
+    pub async fn new(storage: B) -> Result<Self, BufferError> {
+        let buffers = storage.load().await?;
         let store = Self {
             storage,
             buffers: Arc::new(RwLock::new(buffers)),
@@ -137,7 +137,7 @@ where
             return Ok(());
         }
         let buffers = self.buffers.read().await;
-        self.storage.save(&buffers)?;
+        self.storage.save(&buffers).await?;
         self.dirty.store(false, Ordering::Release);
         Ok(())
     }

@@ -10,7 +10,7 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Visibility::Private => "private",
             Visibility::Public => "public",
@@ -71,6 +71,30 @@ impl MemoryRecord {
         }
     }
 
+    /// Имя файла, куда кладётся запись — кодирует метаданные, по которым чаще
+    /// всего фильтруют (`origin_chat_id`/`visibility`/`about_users`), чтобы их
+    /// можно было отсеивать дешёвым листингом директории, не открывая и не
+    /// парся сами файлы. Источник истины всё равно фронтматтер — имя файла
+    /// только подсказка для быстрой предфильтрации (см. `MemoryStore::list_filtered`).
+    pub(crate) fn filename(&self) -> String {
+        let mut about_users_csv = String::new();
+        if !self.about_users.is_empty() {
+            about_users_csv.push(',');
+            for id in &self.about_users {
+                about_users_csv.push_str(&id.to_string());
+                about_users_csv.push(',');
+            }
+        }
+
+        format!(
+            "{}--{}--{}--{}.md",
+            self.origin_chat_id,
+            self.visibility.as_str(),
+            about_users_csv,
+            self.id
+        )
+    }
+
     pub fn to_markdown(&self) -> String {
         let mut mapping = serde_yaml::Mapping::new();
         mapping.insert(Value::String("id".into()), Value::String(self.id.clone()));
@@ -127,8 +151,11 @@ impl MemoryRecord {
         let rest = raw
             .strip_prefix("---\n")
             .ok_or_else(|| MemoryError::Format("missing frontmatter start".to_owned()))?;
+        // Закрывающий разделитель должен быть строго на своей строке — иначе
+        // текст факта, случайно содержащий "\n---" не на отдельной строке, мог
+        // бы сдвинуть границу фронтматтера.
         let (frontmatter, body) = rest
-            .split_once("\n---")
+            .split_once("\n---\n")
             .ok_or_else(|| MemoryError::Format("missing frontmatter end".to_owned()))?;
 
         let value: Value = serde_yaml::from_str(frontmatter)?;
@@ -212,5 +239,27 @@ mod tests {
         let markdown = record.to_markdown();
         let parsed = MemoryRecord::from_markdown(&markdown).expect("valid frontmatter");
         assert_eq!(parsed.last_used, None);
+    }
+
+    #[test]
+    fn filename_encodes_chat_visibility_and_about_users_for_cheap_filtering() {
+        let record = MemoryRecord::new("факт", 0.0, Visibility::Public, vec![111, 222], 341832691, vec![1.0]);
+        let name = record.filename();
+
+        assert!(name.starts_with("341832691--"));
+        assert!(name.contains("--public--"));
+        assert!(name.contains(",111,"));
+        assert!(name.contains(",222,"));
+        assert!(name.ends_with(&format!("{}.md", record.id)));
+    }
+
+    #[test]
+    fn filename_about_users_token_match_does_not_confuse_partial_numbers() {
+        // id 22 не должен "находиться" в списке, где есть только 222.
+        let record = MemoryRecord::new("факт", 0.0, Visibility::Private, vec![222], 1, vec![1.0]);
+        let name = record.filename();
+
+        assert!(name.contains(",222,"));
+        assert!(!name.contains(",22,"));
     }
 }
