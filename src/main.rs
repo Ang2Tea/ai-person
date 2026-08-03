@@ -1,13 +1,15 @@
-use std::{env, fs};
+use std::{env, fs, sync::Arc};
 
 use ai_chat_person::{
     adapters::{local_file_storage::LocalFileStorage, timeweb_client::TimewebClient},
     bot::ChatBot,
     buffer::BufferStore,
+    consolidation,
     memory::MemoryStore,
     settings::Settings,
 };
 use teloxide::{Bot, requests::Requester};
+use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,6 +41,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let system_prompt = fs::read_to_string(settings.personality.system_prompt_path())?;
     let memory = MemoryStore::new(settings.personality.diary_dir_path());
+
+    let initial_insights = fs::read_to_string(settings.personality.insights_path()).unwrap_or_default();
+    let insights: consolidation::SharedInsights =
+        Arc::new(RwLock::new(Arc::from(initial_insights)));
+
+    let model: Arc<str> = settings.llm.model.into();
+    let embedding_model: Arc<str> = settings.llm.embedding_model.into();
+
+    consolidation::spawn_daily_task(
+        timeweb_client.clone(),
+        memory.clone(),
+        settings.memory.clone(),
+        model.clone(),
+        embedding_model.clone(),
+        settings.personality.clone(),
+        insights.clone(),
+    );
+
     let chat_bot = ChatBot::new(
         bot.clone(),
         bot_user_id,
@@ -46,9 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         buffer.clone(),
         memory,
         settings.memory,
-        settings.llm.model,
-        settings.llm.embedding_model,
+        model,
+        embedding_model,
         system_prompt,
+        insights,
     );
 
     tracing::info!("Starting bot");

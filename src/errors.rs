@@ -42,3 +42,13 @@ pub enum MemoryError {
     #[error(transparent)]
     Llm(#[from] LlmError),
 }
+
+#[derive(Debug, Error)]
+pub enum ConsolidationError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+    #[error(transparent)]
+    Llm(#[from] LlmError),
+}

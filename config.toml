@@ -9,6 +9,7 @@ path = "personalities/default"
 system_prompt = "system_prompt.md"
 working_memory = "working_memory.json"
 diary_dir = "diary"
+insights = "insights.md"
 
 [memory]
 token_threshold = 40000
@@ -17,3 +18,4 @@ search_similarity_threshold = 0.3
 search_result_limit = 3
 min_fact_length = 20
 keep_last_messages = 5
+stale_after_days = 60

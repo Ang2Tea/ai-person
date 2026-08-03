@@ -78,6 +78,18 @@ impl LocalMemoryStorage {
         // они не меняются после создания, так что это всегда тот же файл.
         self.append(record).await
     }
+
+    pub async fn remove(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
+        let path = self.root.join(record.filename());
+
+        tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        })
+        .await
+        .expect("blocking task panicked")
+    }
 }
 
 #[derive(Clone)]
@@ -105,5 +117,37 @@ impl MemoryStore {
 
     pub async fn touch(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
         self.0.touch(record).await
+    }
+
+    pub async fn remove(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
+        self.0.remove(record).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::record::Visibility;
+
+    #[tokio::test]
+    async fn remove_deletes_record_file() {
+        let dir = std::env::temp_dir().join(format!("ai-chat-person-test-{}", uuid_like()));
+        let store = MemoryStore::new(&dir);
+
+        let record = MemoryRecord::new("факт для удаления", 0.0, Visibility::Private, vec![], 1, vec![1.0]);
+        store.append(&record).await.expect("append succeeds");
+        assert_eq!(store.list_all().await.expect("list succeeds").len(), 1);
+
+        store.remove(&record).await.expect("remove succeeds");
+        assert!(store.list_all().await.expect("list succeeds").is_empty());
+
+        // Повторное удаление уже отсутствующего файла не должно быть ошибкой.
+        store.remove(&record).await.expect("remove is idempotent");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn uuid_like() -> String {
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string()
     }
 }

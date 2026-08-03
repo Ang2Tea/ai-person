@@ -12,6 +12,7 @@ use crate::{
     adapters::timeweb_client::TimewebClient,
     buffer::{BufferStore, BufferedMessage},
     chat_locks::ChatLocks,
+    consolidation::SharedInsights,
     contracts::{BufferStorage, ChatMessage, Usage},
     errors::AppError,
     memory::{self, MemoryStore},
@@ -35,6 +36,7 @@ pub struct ChatBot<B> {
     model: Arc<str>,
     embedding_model: Arc<str>,
     system_prompt: Arc<str>,
+    insights: SharedInsights,
     tools: Arc<ToolRegistry<B>>,
     chat_locks: ChatLocks,
 }
@@ -54,6 +56,7 @@ where
         model: impl Into<Arc<str>>,
         embedding_model: impl Into<Arc<str>>,
         system_prompt: impl Into<Arc<str>>,
+        insights: SharedInsights,
     ) -> Self {
         let embedding_model: Arc<str> = embedding_model.into();
 
@@ -86,6 +89,7 @@ where
             model: model.into(),
             embedding_model,
             system_prompt: system_prompt.into(),
+            insights,
             tools: Arc::new(registry),
             chat_locks: ChatLocks::new(),
         }
@@ -130,7 +134,12 @@ where
             return Ok(());
         };
 
-        let mut messages = chat_buffer.to_request_messages(&self.system_prompt);
+        let insights = self.insights.read().await.clone();
+        let mut messages = if insights.is_empty() {
+            chat_buffer.to_request_messages(&self.system_prompt)
+        } else {
+            chat_buffer.to_request_messages(&format!("{}\n\n{}", self.system_prompt, insights))
+        };
 
         let ctx = ToolContext {
             chat_id,

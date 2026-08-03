@@ -12,6 +12,7 @@ pub struct PersonalityFiles {
     pub system_prompt: String,
     pub working_memory: String,
     pub diary_dir: String,
+    pub insights: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,6 +33,10 @@ impl PersonalitySettings {
     pub fn diary_dir_path(&self) -> PathBuf {
         Path::new(&self.path).join(&self.files.diary_dir)
     }
+
+    pub fn insights_path(&self) -> PathBuf {
+        Path::new(&self.path).join(&self.files.insights)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +53,7 @@ pub struct MemorySettings {
     pub search_result_limit: usize,
     pub min_fact_length: usize,
     pub keep_last_messages: usize,
+    pub stale_after_days: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

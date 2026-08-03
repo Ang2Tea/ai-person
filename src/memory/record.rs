@@ -76,6 +76,15 @@ impl MemoryRecord {
     /// можно было отсеивать дешёвым листингом директории, не открывая и не
     /// парся сами файлы. Источник истины всё равно фронтматтер — имя файла
     /// только подсказка для быстрой предфильтрации (см. `MemoryStore::list_filtered`).
+    /// Момент создания записи — `id` это и есть unix-время создания
+    /// (см. `MemoryRecord::new`), отдельного поля под это не заводим.
+    pub(crate) fn created_at(&self) -> Option<DateTime<Utc>> {
+        self.id
+            .parse::<i64>()
+            .ok()
+            .and_then(|ts| DateTime::from_timestamp(ts, 0))
+    }
+
     pub(crate) fn filename(&self) -> String {
         let mut about_users_csv = String::new();
         if !self.about_users.is_empty() {
@@ -251,6 +260,13 @@ mod tests {
         assert!(name.contains(",111,"));
         assert!(name.contains(",222,"));
         assert!(name.ends_with(&format!("{}.md", record.id)));
+    }
+
+    #[test]
+    fn created_at_parses_id_as_unix_timestamp() {
+        let record = MemoryRecord::new("факт", 0.0, Visibility::Private, vec![], 1, vec![1.0]);
+        let created_at = record.created_at().expect("id is a valid timestamp");
+        assert_eq!(created_at.timestamp().to_string(), record.id);
     }
 
     #[test]
