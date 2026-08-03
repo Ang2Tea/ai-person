@@ -6,6 +6,7 @@ mod read_chat_history;
 mod remember;
 mod search_memory;
 mod send_message;
+mod send_reaction;
 mod wait;
 
 pub use access::is_chat_access_allowed;
@@ -16,6 +17,7 @@ pub use read_chat_history::ReadChatHistory;
 pub use remember::Remember;
 pub use search_memory::SearchMemory;
 pub use send_message::SendMessage;
+pub use send_reaction::SendReaction;
 pub use wait::Wait;
 
 use serde_json::Value;

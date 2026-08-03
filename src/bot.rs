@@ -5,7 +5,7 @@ use teloxide::{
     Bot,
     dispatching::dialogue::GetChatId,
     requests::Requester,
-    types::{ChatId, Message},
+    types::{ChatId, MaybeAnonymousUser, Message, MessageReactionUpdated, ReactionType},
 };
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     settings::MemorySettings,
     tools::{
         GetCurrentDatetime, ListKnownChats, ReadChatHistory, Remember, SearchMemory, SendMessage,
-        ToolContext, ToolRegistry, Wait,
+        SendReaction, ToolContext, ToolRegistry, Wait,
     },
 };
 
@@ -64,6 +64,7 @@ where
         registry.register(Arc::new(GetCurrentDatetime));
         registry.register(Arc::new(Wait));
         registry.register(Arc::new(SendMessage::new(bot.clone(), bot_user_id)));
+        registry.register(Arc::new(SendReaction::new(bot.clone())));
         registry.register(Arc::new(ListKnownChats::new(buffer.clone())));
         registry.register(Arc::new(ReadChatHistory::new(buffer.clone())));
         registry.register(Arc::new(SearchMemory::new(
@@ -101,15 +102,8 @@ where
             return Ok(());
         };
 
-        // Сериализует весь ход обработки для этого чата — без этого два быстрых
-        // сообщения подряд могли бы параллельно уйти в LLM и вернуться в
-        // произвольном порядке. Держим до конца функции (обычный drop в конце
-        // скоупа); фоновое извлечение памяти ниже (tokio::spawn) этим локом не
-        // оборачивается — оно не должно блокировать обработку следующего сообщения.
-        let _chat_guard = self.chat_locks.lock(chat_id.0).await;
-
-        let Some(text) = msg.text() else {
-            tracing::debug!("Skipping non-text message");
+        let Some(text) = describe_message(&msg) else {
+            tracing::debug!("Skipping message without representable content");
             return Ok(());
         };
 
@@ -122,10 +116,97 @@ where
             telegram_message_id: msg.id.0,
             sender_id: ChatId::from(from.id).0,
             sender_name: from.first_name.clone(),
-            text: text.to_owned(),
+            text,
             timestamp: Utc::now(),
             is_bot: false,
         };
+
+        self.run_turn(chat_id, from.id.0 as i64, incoming).await
+    }
+
+    /// Правки в Telegram применяются только к тексту/подписи — дайс, стикер,
+    /// опрос и т.п. отредактировать в другой тип контента нельзя, поэтому
+    /// здесь достаточно текста/подписи, в отличие от `describe_message`.
+    pub async fn handle_edited_message(&self, msg: Message) -> Result<(), AppError> {
+        let Some(chat_id) = msg.chat_id() else {
+            tracing::error!("Can`t get chat id for edited message");
+            return Ok(());
+        };
+
+        let Some(new_text) = msg.text().or_else(|| msg.caption()) else {
+            tracing::debug!("Skipping edited message without text/caption");
+            return Ok(());
+        };
+
+        let Some(from) = &msg.from else {
+            tracing::error!("Can`t get edited message sender");
+            return Ok(());
+        };
+
+        let incoming = BufferedMessage {
+            telegram_message_id: msg.id.0,
+            sender_id: ChatId::from(from.id).0,
+            sender_name: from.first_name.clone(),
+            text: format!(
+                "{} отредактировал(а) сообщение #{}, теперь: {}",
+                from.first_name, msg.id.0, new_text
+            ),
+            timestamp: Utc::now(),
+            is_bot: false,
+        };
+
+        self.run_turn(chat_id, from.id.0 as i64, incoming).await
+    }
+
+    pub async fn handle_reaction(&self, reaction: MessageReactionUpdated) -> Result<(), AppError> {
+        let MaybeAnonymousUser::User(user) = &reaction.actor else {
+            tracing::debug!("Skipping reaction from an anonymous/channel actor");
+            return Ok(());
+        };
+
+        if user.id.0 as i64 == self.bot_user_id {
+            // Не реагируем на собственные же реакции — иначе потенциальный цикл.
+            return Ok(());
+        }
+
+        if reaction.new_reaction.is_empty() {
+            // Реакцию сняли, а не поставили — этот случай не описан заданием.
+            return Ok(());
+        }
+
+        let chat_id = reaction.chat.id;
+        let emoji = describe_reactions(&reaction.new_reaction);
+
+        let incoming = BufferedMessage {
+            telegram_message_id: reaction.message_id.0,
+            sender_id: user.id.0 as i64,
+            sender_name: user.first_name.clone(),
+            text: format!(
+                "{} поставил(а) реакцию {} на сообщение #{}",
+                user.first_name, emoji, reaction.message_id.0
+            ),
+            timestamp: reaction.date,
+            is_bot: false,
+        };
+
+        self.run_turn(chat_id, user.id.0 as i64, incoming).await
+    }
+
+    /// Общий путь для обычного сообщения, правки и реакции — сериализация по
+    /// чату, буфер, tool-calling цикл, отправка ответа, фоновое извлечение
+    /// памяти. Захват `chat_locks` здесь, а не в каждом из входов, потому что
+    /// сериализация нужна вокруг push/LLM-вызова/ответа, а не вокруг разбора
+    /// конкретного вида апдейта.
+    async fn run_turn(
+        &self,
+        chat_id: ChatId,
+        user_id: i64,
+        incoming: BufferedMessage,
+    ) -> Result<(), AppError> {
+        // Держим до конца функции (обычный drop в конце скоупа); фоновое
+        // извлечение памяти ниже (tokio::spawn) этим локом не оборачивается —
+        // оно не должно блокировать обработку следующего апдейта.
+        let _chat_guard = self.chat_locks.lock(chat_id.0).await;
 
         self.buffer.push(chat_id.0, incoming).await;
 
@@ -143,7 +224,7 @@ where
 
         let ctx = ToolContext {
             chat_id,
-            user_id: from.id.0 as i64,
+            user_id,
             buffer: self.buffer.clone(),
         };
 
@@ -204,7 +285,7 @@ where
             return Ok(());
         };
 
-        let sent = self.bot.send_message(msg.chat.id, &text).await?;
+        let sent = self.bot.send_message(chat_id, &text).await?;
 
         let outgoing = BufferedMessage {
             telegram_message_id: sent.id.0,
@@ -245,4 +326,81 @@ where
 
         Ok(())
     }
+}
+
+/// Текстовое описание содержимого сообщения — вместо голого `.text()`, чтобы
+/// опросы/дайсы/геолокация/контакты/стикеры/подписи тоже попадали в буфер и
+/// проходили через общий tool-calling цикл, а не отбрасывались молча. Сама
+/// медиа-часть (фото/стикер/голос) не разбирается — это отдельная, более
+/// дорогая задача (нужен доп. вызов другой модели).
+fn describe_message(msg: &Message) -> Option<String> {
+    if let Some(text) = msg.text() {
+        return Some(text.to_owned());
+    }
+    if let Some(caption) = msg.caption() {
+        return Some(caption.to_owned());
+    }
+    if let Some(poll) = msg.poll() {
+        let options = poll
+            .options
+            .iter()
+            .map(|o| o.text.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut description = format!("запустил опрос: {} — варианты: {}", poll.question, options);
+        if let Some(explanation) = &poll.explanation {
+            description.push_str(&format!(" (пояснение: {explanation})"));
+        }
+        return Some(description);
+    }
+    if let Some(dice) = msg.dice() {
+        let emoji = match dice.emoji {
+            teloxide::types::DiceEmoji::Dice => "🎲",
+            teloxide::types::DiceEmoji::Darts => "🎯",
+            teloxide::types::DiceEmoji::Bowling => "🎳",
+            teloxide::types::DiceEmoji::Basketball => "🏀",
+            teloxide::types::DiceEmoji::Football => "⚽",
+            teloxide::types::DiceEmoji::SlotMachine => "🎰",
+        };
+        return Some(format!("бросил {emoji}, результат: {}", dice.value));
+    }
+    if let Some(venue) = msg.venue() {
+        return Some(format!(
+            "поделился геолокацией: {} ({})",
+            venue.title, venue.address
+        ));
+    }
+    if msg.location().is_some() {
+        return Some("поделился геолокацией".to_owned());
+    }
+    if let Some(contact) = msg.contact() {
+        let last_name = contact.last_name.clone().unwrap_or_default();
+        return Some(
+            format!(
+                "поделился контактом: {} {}, {}",
+                contact.first_name, last_name, contact.phone_number
+            )
+            .trim()
+            .to_owned(),
+        );
+    }
+    if let Some(sticker) = msg.sticker() {
+        let emoji = sticker.emoji.clone().unwrap_or_default();
+        return Some(format!("отправил стикер {emoji}"));
+    }
+
+    None
+}
+
+/// Эмодзи, реально поставленные (после изменения) — для текста в буфер.
+fn describe_reactions(reactions: &[ReactionType]) -> String {
+    reactions
+        .iter()
+        .map(|r| match r {
+            ReactionType::Emoji { emoji } => emoji.clone(),
+            ReactionType::CustomEmoji { .. } => "кастомный эмодзи".to_owned(),
+            ReactionType::Paid => "⭐".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }

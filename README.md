@@ -1,12 +1,15 @@
 # ai-chat-person
 
 Telegram-бот на Rust с личностью, краткосрочной и долгосрочной памятью, работающий через
-OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embeddings`) с tool-calling.
+OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embeddings`) с tool-calling. Реагирует
+не только на текст, но и на опросы/дайсы/геолокацию/контакты/стикеры/подписи к медиа, а также на
+правки сообщений и реакции других людей — всё проходит через один и тот же буфер и tool-calling
+цикл.
 
 ## Стек
 
-`teloxide` (Telegram, long polling), `tokio`, `reqwest`, `serde`, `config` (TOML), `thiserror`,
-`chrono`, `serde_yaml`.
+`teloxide` (Telegram, long polling), `tokio`, `futures`, `reqwest`, `serde`, `config` (TOML),
+`thiserror`, `chrono`, `serde_yaml`.
 
 ## Запуск
 
@@ -21,14 +24,16 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 3. `cargo run`.
 
 Если бот должен отвечать в группах, а не только в личных сообщениях — отключите privacy mode
-у бота через `@BotFather` → `/setprivacy` → Disable.
+у бота через `@BotFather` → `/setprivacy` → Disable. Чтобы видеть реакции на сообщения в группах —
+бот должен быть администратором этой группы (иначе Telegram не присылает `message_reaction`
+апдейты вообще, независимо от `allowed_updates`).
 
 ## Структура
 
 ```
 src/
-  main.rs                — сборка зависимостей, запуск teloxide::repl
-  bot.rs                 — ChatBot: цикл обработки сообщения + tool-calling
+  main.rs                — сборка зависимостей, цикл поллинга (Message/EditedMessage/MessageReaction)
+  bot.rs                 — ChatBot: разбор апдейтов, общий tool-calling цикл (run_turn)
   chat_locks.rs           — per-chat мьютекс, сериализует обработку одного чата
   consolidation.rs        — ночная консолидация дневника + генерация insights
   settings.rs             — конфиг из config.toml
@@ -36,7 +41,7 @@ src/
   buffer.rs               — краткосрочная память (буфер переписки по чатам)
   memory/                 — долгосрочная память: факты, эмбеддинги, дедуп, поиск
   adapters/               — HTTP-клиент к Timeweb, файловое хранилище буфера
-  tools/                  — инструменты модели (send_message, search_memory, remember, ...)
+  tools/                  — инструменты модели (send_message, send_reaction, search_memory, remember, ...)
 personalities/<name>/
   system_prompt.md        — системный промпт личности
   insights.md             — генерируется ночной консолидацией, подмешивается в системный промпт

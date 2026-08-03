@@ -8,7 +8,13 @@ use ai_chat_person::{
     memory::MemoryStore,
     settings::Settings,
 };
-use teloxide::{Bot, requests::Requester};
+use futures::StreamExt;
+use teloxide::{
+    Bot,
+    requests::Requester,
+    types::{AllowedUpdate, UpdateKind},
+    update_listeners::{AsUpdateStream, Polling},
+};
 use tokio::sync::RwLock;
 
 #[tokio::main]
@@ -74,16 +80,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting bot");
 
-    teloxide::repl(bot.clone(), move |msg: teloxide::types::Message| {
-        let chat_bot = chat_bot.clone();
-        async move {
-            if let Err(err) = chat_bot.handle_message(msg).await {
-                tracing::error!(%err, "Error handling message");
+    let mut listener = Polling::builder(bot.clone())
+        .allowed_updates(vec![
+            AllowedUpdate::Message,
+            AllowedUpdate::EditedMessage,
+            AllowedUpdate::MessageReaction,
+        ])
+        .build();
+    let stream = listener.as_stream();
+    tokio::pin!(stream);
+
+    let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
+    loop {
+        tokio::select! {
+            update = stream.next() => {
+                let Some(update) = update else { break };
+                let update = match update {
+                    Ok(u) => u,
+                    Err(err) => {
+                        tracing::error!(%err, "polling error");
+                        continue;
+                    }
+                };
+
+                let chat_bot = chat_bot.clone();
+                tokio::spawn(async move {
+                    let result = match update.kind {
+                        UpdateKind::Message(msg) => chat_bot.handle_message(msg).await,
+                        UpdateKind::EditedMessage(msg) => chat_bot.handle_edited_message(msg).await,
+                        UpdateKind::MessageReaction(reaction) => chat_bot.handle_reaction(reaction).await,
+                        _ => Ok(()),
+                    };
+                    if let Err(err) = result {
+                        tracing::error!(%err, "Error handling update");
+                    }
+                });
             }
-            Ok(())
+            _ = &mut ctrl_c => {
+                tracing::info!("Ctrl+C received, shutting down");
+                break;
+            }
         }
-    })
-    .await;
+    }
 
     if let Err(err) = buffer.flush().await {
         tracing::error!(%err, "Can`t flush chat buffer on shutdown");
