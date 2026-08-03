@@ -19,6 +19,7 @@ search_result_limit = 3
 min_fact_length = 20
 keep_last_messages = 5
 stale_after_days = 60
+idle_extraction_after_minutes = 30
 
 [proactive]
 interval_minutes = 90

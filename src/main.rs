@@ -5,6 +5,7 @@ use ai_chat_person::{
     bot::ChatBot,
     buffer::BufferStore,
     consolidation,
+    idle_extraction,
     memory::MemoryStore,
     proactive,
     settings::Settings,
@@ -64,6 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedding_model.clone(),
         settings.personality.clone(),
         insights.clone(),
+    );
+
+    idle_extraction::spawn_task(
+        timeweb_client.clone(),
+        memory.clone(),
+        buffer.clone(),
+        settings.memory.clone(),
+        model.clone(),
+        embedding_model.clone(),
     );
 
     let chat_bot = ChatBot::new(

@@ -54,6 +54,7 @@ pub struct MemorySettings {
     pub min_fact_length: usize,
     pub keep_last_messages: usize,
     pub stale_after_days: i64,
+    pub idle_extraction_after_minutes: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

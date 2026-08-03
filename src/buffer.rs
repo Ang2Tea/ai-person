@@ -74,6 +74,12 @@ impl ChatBuffer {
     pub fn last_activity(&self) -> Option<DateTime<Utc>> {
         self.messages.back().map(|m| m.timestamp)
     }
+
+    /// Число сообщений в буфере — по нему воркер извлечения по простою решает,
+    /// есть ли вообще что извлекать сверх `keep_last_messages`.
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
