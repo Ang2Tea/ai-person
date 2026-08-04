@@ -14,6 +14,7 @@ use crate::settings::{MemorySettings, PersonalitySettings};
 
 const CONSOLIDATION_HOUR_LOCAL: u32 = 3;
 const MERGE_SYSTEM_PROMPT: &str = include_str!("../prompts/consolidation_merge_system.md");
+const PRUNE_SYSTEM_PROMPT: &str = include_str!("../prompts/consolidation_prune_system.md");
 const INSIGHTS_SYSTEM_PROMPT: &str = include_str!("../prompts/insights_system.md");
 
 /// Текст, подмешиваемый в системный промпт личности — общий на процесс,
@@ -101,6 +102,10 @@ pub async fn run(
     .await?;
 
     let remaining = memory.list_all().await?;
+    let system_prompt = read_system_prompt(personality).await?;
+    prune_irrelevant(llm, memory, model, &system_prompt, remaining).await?;
+
+    let remaining = memory.list_all().await?;
     remove_stale(memory, memory_settings.stale_after_days, remaining).await?;
 
     let public_records: Vec<MemoryRecord> = memory
@@ -123,13 +128,28 @@ pub async fn run(
     Ok(())
 }
 
-/// Ключ группировки: сливать можно только записи с одинаковой областью
-/// видимости (тот же чат/тот же visibility/тот же набор about_users) — иначе
-/// слияние само стало бы обходом правила видимости из `search_memory`.
-fn group_key(record: &MemoryRecord) -> (i64, &'static str, Vec<i64>) {
-    let mut about_users = record.about_users.clone();
-    about_users.sort_unstable();
-    (record.origin_chat_id, record.visibility.as_str(), about_users)
+/// Ключ группировки — сливать можно только записи внутри одной группы.
+/// `Private` группируется по (чат, набор about_users), как и раньше — иначе
+/// слияние само стало бы обходом правила видимости из `search_memory`, нельзя
+/// объединять приватный факт из одного чата с приватным фактом из другого.
+/// `Public` — единый ключ без привязки к чату: публичный факт по определению
+/// виден отовсюду, значит один и тот же факт, записанный в разных чатах,
+/// можно и нужно сливать в один.
+#[derive(PartialEq, Eq, Hash)]
+enum GroupKey {
+    Public,
+    Private(i64, Vec<i64>),
+}
+
+fn group_key(record: &MemoryRecord) -> GroupKey {
+    match record.visibility {
+        Visibility::Public => GroupKey::Public,
+        Visibility::Private => {
+            let mut about_users = record.about_users.clone();
+            about_users.sort_unstable();
+            GroupKey::Private(record.origin_chat_id, about_users)
+        }
+    }
 }
 
 async fn merge_similar(
@@ -140,7 +160,7 @@ async fn merge_similar(
     similarity_threshold: f32,
     records: Vec<MemoryRecord>,
 ) -> Result<(), ConsolidationError> {
-    let mut groups: HashMap<(i64, &'static str, Vec<i64>), Vec<MemoryRecord>> = HashMap::new();
+    let mut groups: HashMap<GroupKey, Vec<MemoryRecord>> = HashMap::new();
     for record in records {
         groups.entry(group_key(&record)).or_default().push(record);
     }
@@ -234,7 +254,7 @@ async fn merge_cluster(
         merged_text,
         avg_confidence,
         first.visibility,
-        first.about_users.clone(),
+        merge_about_users(&cluster),
         first.origin_chat_id,
         embedding,
     );
@@ -250,6 +270,102 @@ async fn merge_cluster(
     }
 
     Ok(())
+}
+
+/// Объединение `about_users` всех записей кластера (сорт + дедуп). Для
+/// `private` это не меняет результат — в группе и так все `about_users`
+/// идентичны по построению (`group_key`). Для `public` (сливаются между
+/// чатами) — сохраняет упоминания всех людей, о которых был хоть один из
+/// исходных фактов, вместо того чтобы взять только `about_users` первого.
+fn merge_about_users(cluster: &[MemoryRecord]) -> Vec<i64> {
+    let mut about_users: Vec<i64> = cluster
+        .iter()
+        .flat_map(|r| r.about_users.iter().copied())
+        .collect();
+    about_users.sort_unstable();
+    about_users.dedup();
+    about_users
+}
+
+async fn read_system_prompt(personality: &PersonalitySettings) -> Result<String, ConsolidationError> {
+    let path = personality.system_prompt_path();
+
+    let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .expect("blocking task panicked")?;
+
+    Ok(content)
+}
+
+/// Удаляет факты, которые не стоило хранить: дублируют характер бота из
+/// системного промпта, бытовая мелочь без ценности, мета-разговоры о самой
+/// памяти — то, что `merge_similar`/`remove_stale` не ловят (это не дубликаты
+/// и не устаревшие, они могли быть только вчера и ни разу не совпасть по
+/// эмбеддингу с другим фактом).
+async fn prune_irrelevant(
+    llm: &TimewebClient,
+    memory: &MemoryStore,
+    model: &str,
+    system_prompt: &str,
+    records: Vec<MemoryRecord>,
+) -> Result<(), ConsolidationError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    let numbered = records
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. {}", i + 1, r.text))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let messages = vec![
+        ChatMessage::system(PRUNE_SYSTEM_PROMPT.trim()),
+        ChatMessage::user(format!(
+            "Системный промпт:\n{system_prompt}\n\nФакты:\n{numbered}"
+        )),
+    ];
+
+    let completion = llm.chat(model, &messages, &[]).await?;
+    let response = completion.message.content.unwrap_or_default();
+    let discard = parse_discard_indices(&response);
+
+    if discard.is_empty() {
+        tracing::debug!("consolidation: nothing to prune");
+        return Ok(());
+    }
+
+    // Необратимая операция — если модель вернула индексов на удаление больше
+    // или равно общему числу записей, это похоже на то, что она не поняла
+    // задачу, а не на реальное "всё это не нужно". Лучше ничего не сделать.
+    if discard.len() >= records.len() {
+        tracing::warn!(
+            discard_count = discard.len(),
+            total = records.len(),
+            "consolidation: prune response looks degenerate (would remove everything), skipping"
+        );
+        return Ok(());
+    }
+
+    tracing::info!(count = discard.len(), "consolidation: pruning irrelevant facts");
+    for (i, record) in records.iter().enumerate() {
+        if discard.contains(&(i + 1)) {
+            memory.remove(record).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Терпимый парсинг номеров фактов на удаление — по одному на строку или
+/// через запятую, посторонний текст в ответе (модель могла добавить
+/// пояснение вопреки инструкции) просто игнорируется.
+fn parse_discard_indices(response: &str) -> std::collections::HashSet<usize> {
+    response
+        .split([',', '\n'])
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .collect()
 }
 
 async fn remove_stale(
@@ -347,5 +463,47 @@ mod tests {
         let sizes: Vec<usize> = clusters.iter().map(Vec::len).collect();
         assert!(sizes.contains(&2));
         assert!(sizes.contains(&1));
+    }
+
+    #[test]
+    fn public_records_from_different_chats_share_a_group_key() {
+        let a = MemoryRecord::new("a", 0.0, Visibility::Public, vec![1], 111, vec![1.0]);
+        let b = MemoryRecord::new("b", 0.0, Visibility::Public, vec![2], 222, vec![1.0]);
+
+        assert!(group_key(&a) == group_key(&b));
+    }
+
+    #[test]
+    fn private_records_from_different_chats_have_different_group_keys() {
+        let a = MemoryRecord::new("a", 0.0, Visibility::Private, vec![1], 111, vec![1.0]);
+        let b = MemoryRecord::new("b", 0.0, Visibility::Private, vec![1], 222, vec![1.0]);
+
+        assert!(group_key(&a) != group_key(&b));
+    }
+
+    #[test]
+    fn merge_about_users_unions_and_dedups() {
+        let a = MemoryRecord::new("a", 0.0, Visibility::Public, vec![1, 2], 1, vec![1.0]);
+        let b = MemoryRecord::new("b", 0.0, Visibility::Public, vec![2, 3], 1, vec![1.0]);
+
+        assert_eq!(merge_about_users(&[a, b]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn parse_discard_indices_ignores_non_numeric_lines() {
+        let response = "Вот номера на удаление:\n2\n4\n7\nГотово.";
+        let discard = parse_discard_indices(response);
+        assert_eq!(discard, std::collections::HashSet::from([2, 4, 7]));
+    }
+
+    #[test]
+    fn parse_discard_indices_supports_comma_separated_list() {
+        let discard = parse_discard_indices("2, 4, 7");
+        assert_eq!(discard, std::collections::HashSet::from([2, 4, 7]));
+    }
+
+    #[test]
+    fn parse_discard_indices_empty_response_discards_nothing() {
+        assert!(parse_discard_indices("").is_empty());
     }
 }
