@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         diary_dir = %settings.personality.diary_dir_path().display(),
-        search_similarity_threshold = settings.memory.search_similarity_threshold,
+        auto_retrieval_similarity_threshold = settings.memory.auto_retrieval_similarity_threshold,
         dedup_similarity_threshold = settings.memory.dedup_similarity_threshold,
         token_threshold = settings.memory.token_threshold,
         "effective config loaded",

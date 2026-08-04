@@ -103,10 +103,8 @@ pub async fn run(
 
     let remaining = memory.list_all().await?;
     let system_prompt = read_system_prompt(personality).await?;
-    prune_irrelevant(llm, memory, model, &system_prompt, remaining).await?;
-
-    let remaining = memory.list_all().await?;
-    remove_stale(memory, memory_settings.stale_after_days, remaining).await?;
+    prune_irrelevant(llm, memory, model, &system_prompt, &remaining).await?;
+    remove_stale(memory, memory_settings.stale_after_days, &remaining).await?;
 
     let public_records: Vec<MemoryRecord> = memory
         .list_all()
@@ -130,7 +128,7 @@ pub async fn run(
 
 /// Ключ группировки — сливать можно только записи внутри одной группы.
 /// `Private` группируется по (чат, набор about_users), как и раньше — иначе
-/// слияние само стало бы обходом правила видимости из `search_memory`, нельзя
+/// слияние само стало бы обходом правила видимости фактов, нельзя
 /// объединять приватный факт из одного чата с приватным фактом из другого.
 /// `Public` — единый ключ без привязки к чату: публичный факт по определению
 /// виден отовсюду, значит один и тот же факт, записанный в разных чатах,
@@ -307,7 +305,7 @@ async fn prune_irrelevant(
     memory: &MemoryStore,
     model: &str,
     system_prompt: &str,
-    records: Vec<MemoryRecord>,
+    records: &[MemoryRecord],
 ) -> Result<(), ConsolidationError> {
     if records.is_empty() {
         return Ok(());
@@ -371,7 +369,7 @@ fn parse_discard_indices(response: &str) -> std::collections::HashSet<usize> {
 async fn remove_stale(
     memory: &MemoryStore,
     stale_after_days: i64,
-    records: Vec<MemoryRecord>,
+    records: &[MemoryRecord],
 ) -> Result<(), ConsolidationError> {
     let now = Utc::now();
 
@@ -382,7 +380,7 @@ async fn remove_stale(
             .unwrap_or(false);
 
         if is_stale {
-            memory.remove(&record).await?;
+            memory.remove(record).await?;
         }
     }
 

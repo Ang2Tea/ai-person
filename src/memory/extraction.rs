@@ -12,6 +12,10 @@ const EXTRACTION_INSTRUCTION: &str = include_str!("../../prompts/extraction_inst
 /// частая в обычном markdown/LLM-тексте последовательность, факт мог бы
 /// случайно разбиться на куски, если бы содержал её сам.
 const FACT_SEPARATOR: &str = "===FACT===";
+/// Разделяет факты от обновлённого списка открытых задач/обещаний чата в
+/// ответе модели — должен идти строго после всех `FACT_SEPARATOR`-блоков,
+/// иначе список задач слипнется с текстом последнего факта.
+const COMMITMENTS_SEPARATOR: &str = "===COMMITMENTS===";
 
 fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
     let mut text_lines = Vec::new();
@@ -68,15 +72,31 @@ where
     };
 
     let transcript = chat_buffer.to_transcript();
+    let commitments = chat_buffer.commitments();
+    let commitments_context = if commitments.is_empty() {
+        "(пока пусто)"
+    } else {
+        commitments
+    };
     let messages = vec![
         ChatMessage::system(EXTRACTION_SYSTEM_PROMPT.trim()),
-        ChatMessage::user(format!("{transcript}\n\n{EXTRACTION_INSTRUCTION}")),
+        ChatMessage::user(format!(
+            "Текущий список открытых задач/обещаний этого чата:\n{commitments_context}\n\n{transcript}\n\n{EXTRACTION_INSTRUCTION}"
+        )),
     ];
 
     let completion = llm.chat(model, &messages, &[]).await?;
 
     if let Some(content) = completion.message.content {
-        for chunk in content.split(FACT_SEPARATOR) {
+        // Сначала отделяем блок задач от фактов — если резать сразу по
+        // FACT_SEPARATOR по всему content, хвост с задачами прилипнет к
+        // тексту последнего факта.
+        let (facts_part, new_commitments) = match content.split_once(COMMITMENTS_SEPARATOR) {
+            Some((facts, commitments)) => (facts, Some(commitments.trim().to_owned())),
+            None => (content.as_str(), None),
+        };
+
+        for chunk in facts_part.split(FACT_SEPARATOR) {
             let fact = parse_chunk(chunk, chat_id);
             if fact.text.len() < settings.min_fact_length {
                 continue;
@@ -93,6 +113,10 @@ where
             {
                 tracing::error!(chat_id, %err, "failed to save extracted fact");
             }
+        }
+
+        if let Some(new_commitments) = new_commitments {
+            buffer.set_commitments(chat_id, new_commitments).await;
         }
     }
 

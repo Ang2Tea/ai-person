@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -15,11 +16,11 @@ use crate::{
     consolidation::SharedInsights,
     contracts::{BufferStorage, ChatMessage, Usage},
     errors::AppError,
-    memory::{self, MemoryStore},
+    memory::{self, MemoryRecord, MemoryStore, Visibility},
     settings::MemorySettings,
     tools::{
-        GetCurrentDatetime, ListKnownChats, ReadChatHistory, Remember, SearchMemory, SendMessage,
-        SendReaction, ToolContext, ToolRegistry, Wait,
+        GetCurrentDatetime, ListKnownChats, ReadChatHistory, Remember, SendMessage, SendReaction,
+        ToolContext, ToolRegistry, Wait,
     },
 };
 
@@ -68,12 +69,6 @@ where
         registry.register(Arc::new(SendReaction::new(bot.clone())));
         registry.register(Arc::new(ListKnownChats::new(buffer.clone())));
         registry.register(Arc::new(ReadChatHistory::new(buffer.clone())));
-        registry.register(Arc::new(SearchMemory::new(
-            llm.clone(),
-            memory.clone(),
-            memory_settings.clone(),
-            embedding_model.clone(),
-        )));
         registry.register(Arc::new(Remember::new(
             llm.clone(),
             memory.clone(),
@@ -209,6 +204,7 @@ where
         // блокировать обработку следующего апдейта.
         let _chat_guard = self.chat_locks.lock(chat_id.0).await;
 
+        let query = incoming.text.clone();
         self.buffer.push(chat_id.0, incoming).await;
 
         let Some(chat_buffer) = self.buffer.get(chat_id.0).await else {
@@ -216,7 +212,9 @@ where
             return Ok(());
         };
 
-        let messages = self.build_messages(&chat_buffer).await;
+        let messages = self
+            .build_messages(&chat_buffer, chat_id, user_id, Some(&query))
+            .await;
         let ctx = ToolContext {
             chat_id,
             user_id,
@@ -248,7 +246,9 @@ where
             return Ok(());
         };
 
-        let mut messages = self.build_messages(&chat_buffer).await;
+        let mut messages = self
+            .build_messages(&chat_buffer, chat_id, self.bot_user_id, None)
+            .await;
         messages.push(ChatMessage::user(PROACTIVE_NUDGE_PROMPT.trim()));
 
         let ctx = ToolContext {
@@ -269,13 +269,109 @@ where
         Ok(())
     }
 
-    async fn build_messages(&self, chat_buffer: &ChatBuffer) -> Vec<ChatMessage> {
+    /// Собирает системный промпт из статической личности, `insights`
+    /// (обновляется ночной консолидацией), `commitments` этого чата
+    /// (обновляется вместе с извлечением фактов, см. `memory::maybe_extract`)
+    /// и автоматически найденных релевантных фактов долгосрочной памяти по
+    /// тексту входящего сообщения (`query`) — модель их получает сразу, а не
+    /// только если сама решит что-то поискать.
+    async fn build_messages(
+        &self,
+        chat_buffer: &ChatBuffer,
+        chat_id: ChatId,
+        user_id: i64,
+        query: Option<&str>,
+    ) -> Vec<ChatMessage> {
+        let mut system_prompt = self.system_prompt.to_string();
+
         let insights = self.insights.read().await.clone();
-        if insights.is_empty() {
-            chat_buffer.to_request_messages(&self.system_prompt)
-        } else {
-            chat_buffer.to_request_messages(&format!("{}\n\n{}", self.system_prompt, insights))
+        if !insights.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&insights);
         }
+
+        if !chat_buffer.commitments().is_empty() {
+            system_prompt.push_str("\n\nОткрытые задачи/обещания в этом чате:\n");
+            system_prompt.push_str(chat_buffer.commitments());
+        }
+
+        if let Some(query) = query
+            && let Some(relevant) = self.retrieve_relevant_facts(chat_id, user_id, query).await
+        {
+            system_prompt.push_str("\n\nИз памяти, возможно относится к происходящему:\n");
+            system_prompt.push_str(&relevant);
+        }
+
+        chat_buffer.to_request_messages(&system_prompt)
+    }
+
+    /// Автоматический поиск по долгосрочной памяти вместо инструмента, который
+    /// модель должна была бы сама решить вызвать — иначе она не всегда
+    /// догадывается спросить, и бот "не помнит" собеседника в другом чате.
+    /// Пороги строже, чем были бы у ручного инструмента: срабатывает на
+    /// каждое сообщение, значит должен быть придирчивее, чтобы не забивать
+    /// контекст маловероятным. Любая ошибка — тихо `None`, не роняя ход.
+    async fn retrieve_relevant_facts(
+        &self,
+        chat_id: ChatId,
+        user_id: i64,
+        query: &str,
+    ) -> Option<String> {
+        let query_embedding = self
+            .llm
+            .embed(&self.embedding_model, query)
+            .await
+            .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: embedding failed"))
+            .ok()?;
+
+        let own_prefix = format!("{}--", chat_id.0);
+        let about_me_token = format!(",{user_id},");
+        let records = self
+            .memory
+            .list_filtered(move |name| {
+                name.starts_with(&own_prefix)
+                    || name.contains("--public--")
+                    || name.contains(&about_me_token)
+            })
+            .await
+            .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: listing records failed"))
+            .ok()?;
+
+        let mut matches: Vec<(f32, MemoryRecord)> = Vec::new();
+        for record in records {
+            if !is_visible(&record, chat_id.0, user_id) {
+                continue;
+            }
+
+            let score = memory::cosine_similarity(&record.embedding, &query_embedding);
+            if score >= self.memory_settings.auto_retrieval_similarity_threshold {
+                matches.push((score, record));
+            }
+        }
+
+        if matches.is_empty() {
+            return None;
+        }
+
+        matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+        matches.truncate(self.memory_settings.auto_retrieval_limit);
+
+        let mut result = String::new();
+        for (_, mut record) in matches {
+            result.push_str(&format!(
+                "- [уверенность: {}] {}\n",
+                record.confidence,
+                record.text.trim()
+            ));
+
+            record.usage_count += 1;
+            record.last_used = Some(Utc::now());
+            if let Err(err) = self.memory.touch(&record).await {
+                tracing::warn!(%err, "auto-retrieval: failed to update memory record usage stats");
+            }
+        }
+
+        Some(result.trim().to_owned())
     }
 
     /// Цикл вызовов LLM + диспетчеризация инструментов, общий для обычного
@@ -457,6 +553,15 @@ fn describe_message(msg: &Message) -> Option<String> {
     }
 
     None
+}
+
+/// Запись видна из чата `chat_id` от лица пользователя `user_id`, если она
+/// публичная, либо возникла в этом же чате, либо лично про этого пользователя
+/// (даже если приватная и из другого чата).
+fn is_visible(record: &MemoryRecord, chat_id: i64, user_id: i64) -> bool {
+    record.visibility == Visibility::Public
+        || record.origin_chat_id == chat_id
+        || record.about_users.contains(&user_id)
 }
 
 /// Эмодзи, реально поставленные (после изменения) — для текста в буфер.

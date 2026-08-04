@@ -49,8 +49,8 @@ pub struct LlmSettings {
 pub struct MemorySettings {
     pub token_threshold: u32,
     pub dedup_similarity_threshold: f32,
-    pub search_similarity_threshold: f32,
-    pub search_result_limit: usize,
+    pub auto_retrieval_similarity_threshold: f32,
+    pub auto_retrieval_limit: usize,
     pub min_fact_length: usize,
     pub keep_last_messages: usize,
     pub stale_after_days: i64,

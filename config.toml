@@ -14,8 +14,8 @@ insights = "insights.md"
 [memory]
 token_threshold = 40000
 dedup_similarity_threshold = 0.92
-search_similarity_threshold = 0.3
-search_result_limit = 3
+auto_retrieval_similarity_threshold = 0.5
+auto_retrieval_limit = 2
 min_fact_length = 20
 keep_last_messages = 5
 stale_after_days = 60
