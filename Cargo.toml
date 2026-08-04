@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 config = { version = "0.15.25", default-features = false, features = ["toml"] }
 dotenvy = "0.15.7"
 futures = "0.3"

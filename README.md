@@ -33,6 +33,7 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 ```
 src/
   main.rs                — сборка зависимостей, цикл поллинга (Message/EditedMessage/MessageReaction)
+  bin/admin.rs            — CLI для ручного запуска фоновых задач (extract/sleep), без Telegram
   bot.rs                 — ChatBot: разбор апдейтов, общий tool-calling цикл (run_turn/run_proactive)
   chat_locks.rs           — per-chat мьютекс, сериализует обработку одного чата
   consolidation.rs        — ночная консолидация дневника + генерация insights
@@ -73,6 +74,16 @@ config.toml               — путь к активной личности, м�
 чатах с тем же человеком.
 
 `personalities/` и `.env` — в `.gitignore`, реальные диалоги и токены в репозиторий не попадают.
+
+## Ручной запуск фоновых задач
+
+Не дожидаясь расписания/порогов — например, чтобы проверить, что всё работает:
+```
+cargo run --bin admin -- extract            # извлечь факты из всех известных чатов в дневник
+cargo run --bin admin -- extract --chat-id <id>  # только из одного чата
+cargo run --bin admin -- sleep               # прогнать ночную консолидацию прямо сейчас
+```
+Работает напрямую с файлами буфера/дневника, Telegram не трогает.
 
 ## Разработка
 
