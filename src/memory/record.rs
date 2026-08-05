@@ -140,13 +140,20 @@ impl MemoryRecord {
             Value::String("usageCount".into()),
             Value::Number(self.usage_count.into()),
         );
+        // Компактной строкой, а не YAML-последовательностью — serde_yaml не
+        // умеет однострочный (flow-style) вывод списков, а блочный список на
+        // ~1000+ чисел эмбеддинга делает дневник нечитаемым. Числа через
+        // запятую в одной строке — тот же приём, что уже у about_users_csv в
+        // filename(). Источник истины всё равно эти числа, формат хранения —
+        // деталь сериализации.
         mapping.insert(
             Value::String("embedding".into()),
-            Value::Sequence(
+            Value::String(
                 self.embedding
                     .iter()
-                    .map(|v| Value::Number((*v as f64).into()))
-                    .collect(),
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
             ),
         );
 
@@ -197,15 +204,21 @@ impl MemoryRecord {
             ),
         };
         let usage_count = get("usageCount").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let embedding = get("embedding")
-            .and_then(Value::as_sequence)
-            .map(|seq| {
-                seq.iter()
-                    .filter_map(Value::as_f64)
-                    .map(|v| v as f32)
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Новый формат — строка чисел через запятую (см. `to_markdown`); старый
+        // формат — YAML-последовательность, читаем и его для совместимости с
+        // уже существующими файлами дневника, записанными до этой правки.
+        let embedding = match get("embedding") {
+            Some(Value::String(s)) => s
+                .split(',')
+                .filter_map(|part| part.trim().parse::<f32>().ok())
+                .collect(),
+            Some(Value::Sequence(seq)) => seq
+                .iter()
+                .filter_map(Value::as_f64)
+                .map(|v| v as f32)
+                .collect(),
+            _ => Vec::new(),
+        };
 
         Ok(Self {
             id,

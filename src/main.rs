@@ -1,9 +1,10 @@
 use std::{env, fs, sync::Arc};
 
-use ai_chat_person::{
+use ai_person::{
     adapters::{local_file_storage::LocalFileStorage, timeweb_client::TimewebClient},
     bot::ChatBot,
     buffer::BufferStore,
+    commitments::CommitmentsStore,
     consolidation,
     idle_extraction,
     memory::MemoryStore,
@@ -49,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let system_prompt = fs::read_to_string(settings.personality.system_prompt_path())?;
     let memory = MemoryStore::new(settings.personality.diary_dir_path());
+    let commitments = CommitmentsStore::new(settings.personality.commitments_dir_path());
 
     let initial_insights = fs::read_to_string(settings.personality.insights_path()).unwrap_or_default();
     let insights: consolidation::SharedInsights =
@@ -71,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeweb_client.clone(),
         memory.clone(),
         buffer.clone(),
+        commitments.clone(),
         settings.memory.clone(),
         model.clone(),
         embedding_model.clone(),
@@ -83,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         buffer.clone(),
         memory,
         settings.memory,
+        commitments,
         model,
         embedding_model,
         system_prompt,

@@ -1,5 +1,6 @@
 use crate::adapters::timeweb_client::TimewebClient;
 use crate::buffer::BufferStore;
+use crate::commitments::CommitmentsStore;
 use crate::contracts::{BufferStorage, ChatMessage};
 use crate::errors::MemoryError;
 use crate::memory::{MemoryStore, NewFact, Visibility, save_fact};
@@ -55,10 +56,12 @@ fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
 /// Отправляет отдельный (вне основного tool-calling цикла) запрос модели на
 /// выделение фактов из текущего буфера чата, сохраняет то, что прошло дедуп, и
 /// обрезает (не очищает) буфер до последних `keep_last_messages` сообщений.
+#[allow(clippy::too_many_arguments)]
 pub async fn maybe_extract<B>(
     llm: &TimewebClient,
     memory: &MemoryStore,
     buffer: &BufferStore<B>,
+    commitments: &CommitmentsStore,
     chat_id: i64,
     settings: &MemorySettings,
     model: &str,
@@ -72,12 +75,8 @@ where
     };
 
     let transcript = chat_buffer.to_transcript();
-    let commitments = chat_buffer.commitments();
-    let commitments_context = if commitments.is_empty() {
-        "(пока пусто)"
-    } else {
-        commitments
-    };
+    let existing_commitments = commitments.get(chat_id).await;
+    let commitments_context = existing_commitments.as_deref().unwrap_or("(пока пусто)");
     let messages = vec![
         ChatMessage::system(EXTRACTION_SYSTEM_PROMPT.trim()),
         ChatMessage::user(format!(
@@ -115,8 +114,10 @@ where
             }
         }
 
-        if let Some(new_commitments) = new_commitments {
-            buffer.set_commitments(chat_id, new_commitments).await;
+        if let Some(new_commitments) = new_commitments
+            && let Err(err) = commitments.set(chat_id, new_commitments).await
+        {
+            tracing::error!(chat_id, %err, "failed to save updated commitments");
         }
     }
 

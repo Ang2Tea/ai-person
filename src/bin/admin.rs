@@ -1,8 +1,9 @@
 use std::{env, fs, sync::Arc};
 
-use ai_chat_person::{
+use ai_person::{
     adapters::{local_file_storage::LocalFileStorage, timeweb_client::TimewebClient},
     buffer::BufferStore,
+    commitments::CommitmentsStore,
     consolidation, memory,
     memory::MemoryStore,
     settings::Settings,
@@ -51,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let buffer_storage = LocalFileStorage::new(settings.personality.working_memory_path());
     let buffer = BufferStore::new(buffer_storage).await?;
     let memory = MemoryStore::new(settings.personality.diary_dir_path());
+    let commitments = CommitmentsStore::new(settings.personality.commitments_dir_path());
 
     let model = settings.llm.model;
     let embedding_model = settings.llm.embedding_model;
@@ -73,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &llm,
                     &memory,
                     &buffer,
+                    &commitments,
                     chat_id,
                     &settings.memory,
                     &model,

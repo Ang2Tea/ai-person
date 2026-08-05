@@ -13,6 +13,7 @@ pub struct PersonalityFiles {
     pub working_memory: String,
     pub diary_dir: String,
     pub insights: String,
+    pub commitments_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -36,6 +37,10 @@ impl PersonalitySettings {
 
     pub fn insights_path(&self) -> PathBuf {
         Path::new(&self.path).join(&self.files.insights)
+    }
+
+    pub fn commitments_dir_path(&self) -> PathBuf {
+        Path::new(&self.path).join(&self.files.commitments_dir)
     }
 }
 

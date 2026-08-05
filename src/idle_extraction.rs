@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::adapters::timeweb_client::TimewebClient;
 use crate::buffer::{BufferStore, ChatBuffer};
+use crate::commitments::CommitmentsStore;
 use crate::contracts::BufferStorage;
 use crate::memory::{self, MemoryStore};
 use crate::settings::MemorySettings;
@@ -19,10 +20,12 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// накопилось больше, чем `keep_last_messages` (то, что `maybe_extract`
 /// оставляет в буфере после себя) — смысл разговора уже случился, ждать
 /// накопления токенов незачем.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_task<B>(
     llm: TimewebClient,
     memory: MemoryStore,
     buffer: BufferStore<B>,
+    commitments: CommitmentsStore,
     settings: MemorySettings,
     model: Arc<str>,
     embedding_model: Arc<str>,
@@ -53,6 +56,7 @@ pub fn spawn_task<B>(
                     &llm,
                     &memory,
                     &buffer,
+                    &commitments,
                     chat_id,
                     &settings,
                     &model,

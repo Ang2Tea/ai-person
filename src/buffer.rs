@@ -22,13 +22,6 @@ pub struct BufferedMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatBuffer {
     messages: VecDeque<BufferedMessage>,
-    /// Курируемый LLM список открытых задач/обещаний этого чата — отдельно от
-    /// сырого транскрипта (`messages`) и от вечных фактов (дневник). Обновляется
-    /// вместе с извлечением фактов (`memory::maybe_extract`), не отдельным
-    /// циклом. `#[serde(default)]` — старые сохранённые буферы без этого поля
-    /// продолжают десериализоваться как есть, с пустым списком.
-    #[serde(default)]
-    commitments: String,
 }
 
 impl ChatBuffer {
@@ -86,14 +79,6 @@ impl ChatBuffer {
     /// есть ли вообще что извлекать сверх `keep_last_messages`.
     pub fn message_count(&self) -> usize {
         self.messages.len()
-    }
-
-    pub fn commitments(&self) -> &str {
-        &self.commitments
-    }
-
-    pub fn set_commitments(&mut self, text: String) {
-        self.commitments = text;
     }
 }
 
@@ -156,12 +141,6 @@ where
         if let Some(buffer) = buffers.get_mut(&chat_id) {
             buffer.truncate_keep_last(n);
         }
-        self.dirty.store(true, Ordering::Release);
-    }
-
-    pub async fn set_commitments(&self, chat_id: i64, text: String) {
-        let mut buffers = self.buffers.write().await;
-        buffers.entry(chat_id).or_default().set_commitments(text);
         self.dirty.store(true, Ordering::Release);
     }
 

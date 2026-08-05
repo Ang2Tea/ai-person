@@ -10,6 +10,7 @@ system_prompt = "system_prompt.md"
 working_memory = "working_memory.json"
 diary_dir = "diary"
 insights = "insights.md"
+commitments_dir = "commitments"
 
 [memory]
 token_threshold = 40000

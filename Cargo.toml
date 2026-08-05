@@ -1,5 +1,5 @@
 [package]
-name = "ai-chat-person"
+name = "ai-person"
 version = "0.1.0"
 edition = "2024"
 

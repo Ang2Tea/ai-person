@@ -13,6 +13,7 @@ use crate::{
     adapters::timeweb_client::TimewebClient,
     buffer::{BufferStore, BufferedMessage, ChatBuffer},
     chat_locks::ChatLocks,
+    commitments::CommitmentsStore,
     consolidation::SharedInsights,
     contracts::{BufferStorage, ChatMessage, Usage},
     errors::AppError,
@@ -35,6 +36,7 @@ pub struct ChatBot<B> {
     buffer: BufferStore<B>,
     memory: MemoryStore,
     memory_settings: MemorySettings,
+    commitments: CommitmentsStore,
     model: Arc<str>,
     embedding_model: Arc<str>,
     system_prompt: Arc<str>,
@@ -55,6 +57,7 @@ where
         buffer: BufferStore<B>,
         memory: MemoryStore,
         memory_settings: MemorySettings,
+        commitments: CommitmentsStore,
         model: impl Into<Arc<str>>,
         embedding_model: impl Into<Arc<str>>,
         system_prompt: impl Into<Arc<str>>,
@@ -83,6 +86,7 @@ where
             buffer,
             memory,
             memory_settings,
+            commitments,
             model: model.into(),
             embedding_model,
             system_prompt: system_prompt.into(),
@@ -290,9 +294,11 @@ where
             system_prompt.push_str(&insights);
         }
 
-        if !chat_buffer.commitments().is_empty() {
+        if let Some(commitments) = self.commitments.get(chat_id.0).await
+            && !commitments.is_empty()
+        {
             system_prompt.push_str("\n\nОткрытые задачи/обещания в этом чате:\n");
-            system_prompt.push_str(chat_buffer.commitments());
+            system_prompt.push_str(&commitments);
         }
 
         if let Some(query) = query
@@ -468,6 +474,7 @@ where
         let llm = self.llm.clone();
         let memory = self.memory.clone();
         let buffer = self.buffer.clone();
+        let commitments = self.commitments.clone();
         let settings = self.memory_settings.clone();
         let model = self.model.clone();
         let embedding_model = self.embedding_model.clone();
@@ -478,6 +485,7 @@ where
                 &llm,
                 &memory,
                 &buffer,
+                &commitments,
                 raw_chat_id,
                 &settings,
                 &model,
