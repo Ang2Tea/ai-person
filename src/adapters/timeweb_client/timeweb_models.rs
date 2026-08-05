@@ -10,7 +10,12 @@ pub struct ChatResponse {
     pub created: i64,
     pub model: String,
     pub object: String,
-    #[serde(rename = "system_fingerprint")]
+    // Не все модели, проксируемые Timeweb, возвращают это поле (например,
+    // dashscope/qwen3.7-plus его не присылает вовсе) — без `default` это
+    // валило десериализацию ответа целиком, из-за чего бот не мог получить
+    // от такой модели вообще никакого ответа. Поле нигде не используется
+    // ниже, но оставляем для отладки/логов.
+    #[serde(rename = "system_fingerprint", default)]
     pub system_fingerprint: String,
     pub choices: Vec<Choice>,
     #[serde(default)]
