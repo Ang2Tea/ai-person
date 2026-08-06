@@ -1,11 +1,9 @@
+use contracts::{Storage, Tool, ToolError, ToolSpec};
 use serde_json::{Value, json};
+use std::future::Future;
 use std::pin::Pin;
 
-use contracts::Storage;
-
 use crate::buffer::BufferStore;
-use crate::errors::ToolError;
-use crate::tools::{Tool, ToolContext};
 
 pub struct ListKnownChats<B> {
     buffer: BufferStore<B>,
@@ -17,7 +15,7 @@ impl<B> ListKnownChats<B> {
     }
 }
 
-impl<B> Tool<B> for ListKnownChats<B>
+impl<B> Tool for ListKnownChats<B>
 where
     B: Storage + Clone + Send + Sync + 'static,
 {
@@ -25,27 +23,24 @@ where
         "list_known_chats"
     }
 
-    fn spec(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "list_known_chats",
-                "description": "Показывает список чатов Telegram, с которыми ты уже когда-либо \
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "list_known_chats".to_owned(),
+            description: "Показывает список чатов Telegram, с которыми ты уже когда-либо \
         общался (id и последний известный собеседник в этом чате). Используй перед `send_message` с \
-        явным `chat_id`, чтобы выбрать, куда именно писать — по памяти id чатов не угадать.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-        })
+        явным `chat_id`, чтобы выбрать, куда именно писать — по памяти id чатов не угадать."
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }),
+        }
     }
 
     fn call<'a>(
         &self,
         _args: Value,
-        _ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         let buffer = self.buffer.clone();
 

@@ -25,8 +25,8 @@ impl Visibility {
     }
 }
 
-/// Факт, ожидающий эмбеддинга и сохранения — общий вход для фонового извлечения
-/// и проактивного инструмента `remember`.
+/// Факт, ожидающий embedding и сохранения — общий вход для фонового извлечения
+/// и про активного инструмента `remember`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewFact {
     pub text: String,
@@ -74,8 +74,8 @@ impl MemoryRecord {
     /// Имя файла, куда кладётся запись — кодирует метаданные, по которым чаще
     /// всего фильтруют (`origin_chat_id`/`visibility`/`about_users`), чтобы их
     /// можно было отсеивать дешёвым листингом директории, не открывая и не
-    /// парся сами файлы. Источник истины всё равно фронтматтер — имя файла
-    /// только подсказка для быстрой предфильтрации (см. `MemoryStore::list_filtered`).
+    /// parse сами файлы. Источник истины всё равно фронт — имя файла
+    /// только подсказка для быстрой пред фильтрации (см. `MemoryStore::list_filtered`).
     /// Момент создания записи — `id` это и есть unix-время создания
     /// (см. `MemoryRecord::new`), отдельного поля под это не заводим.
     pub(crate) fn created_at(&self) -> Option<DateTime<Utc>> {
@@ -104,7 +104,7 @@ impl MemoryRecord {
         )
     }
 
-    pub fn to_markdown(&self) -> String {
+    pub fn to_markdown(&self) -> Result<String, MemoryError> {
         let mut mapping = serde_yaml::Mapping::new();
         mapping.insert(Value::String("id".into()), Value::String(self.id.clone()));
         mapping.insert(
@@ -142,10 +142,10 @@ impl MemoryRecord {
         );
         // Компактной строкой, а не YAML-последовательностью — serde_yaml не
         // умеет однострочный (flow-style) вывод списков, а блочный список на
-        // ~1000+ чисел эмбеддинга делает дневник нечитаемым. Числа через
+        // ~1000+ чисел embedding делает дневник нечитаемым. Числа через
         // запятую в одной строке — тот же приём, что уже у about_users_csv в
         // filename(). Источник истины всё равно эти числа, формат хранения —
-        // деталь сериализации.
+        // деталь сериализация.
         mapping.insert(
             Value::String("embedding".into()),
             Value::String(
@@ -157,10 +157,9 @@ impl MemoryRecord {
             ),
         );
 
-        let yaml = serde_yaml::to_string(&Value::Mapping(mapping))
-            .expect("memory record frontmatter is always representable as yaml");
+        let yaml = serde_yaml::to_string(&Value::Mapping(mapping))?;
 
-        format!("---\n{yaml}---\n\n{}\n", self.text)
+        Ok(format!("---\n{yaml}---\n\n{}\n", self.text))
     }
 
     pub fn from_markdown(raw: &str) -> Result<Self, MemoryError> {
@@ -169,7 +168,7 @@ impl MemoryRecord {
             .ok_or_else(|| MemoryError::Format("missing frontmatter start".to_owned()))?;
         // Закрывающий разделитель должен быть строго на своей строке — иначе
         // текст факта, случайно содержащий "\n---" не на отдельной строке, мог
-        // бы сдвинуть границу фронтматтера.
+        // бы сдвинуть границу фронт.
         let (frontmatter, body) = rest
             .split_once("\n---\n")
             .ok_or_else(|| MemoryError::Format("missing frontmatter end".to_owned()))?;
@@ -241,7 +240,7 @@ mod tests {
     #[test]
     fn round_trip_preserves_all_fields() {
         let record = MemoryRecord::new(
-            "У пользователя есть кот по имени Барсик, боится воды.",
+            "У пользователя есть кот по имени Ирис, боится воды.",
             1.0,
             Visibility::Private,
             vec![123456789],
@@ -249,7 +248,7 @@ mod tests {
             vec![0.0123, -0.0456, 0.0789],
         );
 
-        let markdown = record.to_markdown();
+        let markdown = record.to_markdown().expect("record serializes");
         let parsed = MemoryRecord::from_markdown(&markdown).expect("valid frontmatter");
 
         assert_eq!(parsed, record);
@@ -258,7 +257,7 @@ mod tests {
     #[test]
     fn never_used_round_trips_as_none() {
         let record = MemoryRecord::new("факт", 0.0, Visibility::Public, vec![], 5113698655, vec![1.0]);
-        let markdown = record.to_markdown();
+        let markdown = record.to_markdown().expect("record serializes");
         let parsed = MemoryRecord::from_markdown(&markdown).expect("valid frontmatter");
         assert_eq!(parsed.last_used, None);
     }

@@ -1,4 +1,4 @@
-use llm_timeweb::TimewebClient;
+use contracts::{Llm, Storage};
 
 use crate::errors::MemoryError;
 use crate::memory::record::{MemoryRecord, NewFact};
@@ -10,13 +10,17 @@ use crate::memory::store::MemoryStore;
 /// достаточно похожая запись (факт отброшен как дубликат). Дедуп скопирован по
 /// чату — иначе слегка похожий факт из разговора с одним человеком мог бы
 /// задедупить не связанный факт из разговора с другим.
-pub async fn save_fact(
-    llm: &TimewebClient,
-    memory: &MemoryStore,
+pub async fn save_fact<L, S>(
+    llm: &L,
+    memory: &MemoryStore<S>,
     fact: NewFact,
     dedup_threshold: f32,
     embedding_model: &str,
-) -> Result<bool, MemoryError> {
+) -> Result<bool, MemoryError>
+where
+    L: Llm,
+    S: Storage + Clone + Send + Sync + 'static,
+{
     let embedding = llm.embed(embedding_model, &fact.text).await?;
 
     let origin_prefix = format!("{}--", fact.origin_chat_id);

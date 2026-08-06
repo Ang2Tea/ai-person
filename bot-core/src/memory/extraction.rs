@@ -1,5 +1,4 @@
-use contracts::{ChatMessage, Storage};
-use llm_timeweb::TimewebClient;
+use contracts::{ChatMessage, Llm, Storage};
 
 use crate::buffer::BufferStore;
 use crate::commitments::CommitmentsStore;
@@ -58,17 +57,18 @@ fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
 /// выделение фактов из текущего буфера чата, сохраняет то, что прошло дедуп, и
 /// обрезает (не очищает) буфер до последних `keep_last_messages` сообщений.
 #[allow(clippy::too_many_arguments)]
-pub async fn maybe_extract<B>(
-    llm: &TimewebClient,
-    memory: &MemoryStore,
+pub async fn maybe_extract<L, B>(
+    llm: &L,
+    memory: &MemoryStore<B>,
     buffer: &BufferStore<B>,
-    commitments: &CommitmentsStore,
+    commitments: &CommitmentsStore<B>,
     chat_id: i64,
     settings: &MemorySettings,
     model: &str,
     embedding_model: &str,
 ) -> Result<(), MemoryError>
 where
+    L: Llm,
     B: Storage + Clone + Send + Sync + 'static,
 {
     let Some(chat_buffer) = buffer.get(chat_id).await else {

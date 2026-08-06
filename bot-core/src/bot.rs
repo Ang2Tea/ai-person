@@ -9,8 +9,7 @@ use teloxide::{
     types::{ChatId, MaybeAnonymousUser, Message, MessageReactionUpdated, ReactionType},
 };
 
-use contracts::{ChatMessage, Storage, Usage};
-use llm_timeweb::TimewebClient;
+use contracts::{ChatMessage, Llm, Storage, Tool, Usage};
 
 use crate::{
     buffer::{BufferStore, BufferedMessage, ChatBuffer},
@@ -20,65 +19,55 @@ use crate::{
     errors::AppError,
     memory::{self, MemoryRecord, MemoryStore, Visibility},
     settings::MemorySettings,
-    tools::{
-        GetCurrentDatetime, ListKnownChats, ReadChatHistory, Remember, SendMessage, SendReaction,
-        ToolContext, ToolRegistry, Wait,
-    },
+    tools::ToolRegistry,
 };
 
 const MAX_TOOL_ITERATIONS: usize = 5;
 const PROACTIVE_NUDGE_PROMPT: &str = include_str!("../../prompts/proactive_nudge.md");
 
 #[derive(Clone)]
-pub struct ChatBot<B> {
+pub struct ChatBot<L, B> {
     bot: Bot,
     bot_user_id: i64,
-    llm: TimewebClient,
+    llm: L,
     buffer: BufferStore<B>,
-    memory: MemoryStore,
+    memory: MemoryStore<B>,
     memory_settings: MemorySettings,
-    commitments: CommitmentsStore,
+    commitments: CommitmentsStore<B>,
     model: Arc<str>,
     embedding_model: Arc<str>,
     system_prompt: Arc<str>,
     insights: SharedInsights,
-    tools: Arc<ToolRegistry<B>>,
+    tools: Arc<ToolRegistry>,
     chat_locks: ChatLocks,
 }
 
-impl<B> ChatBot<B>
+impl<L, B> ChatBot<L, B>
 where
+    L: Llm + Clone + Send + Sync + 'static,
     B: Storage + Clone + Send + Sync + 'static,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         bot: Bot,
         bot_user_id: i64,
-        llm: TimewebClient,
+        llm: L,
         buffer: BufferStore<B>,
-        memory: MemoryStore,
+        memory: MemoryStore<B>,
         memory_settings: MemorySettings,
-        commitments: CommitmentsStore,
+        commitments: CommitmentsStore<B>,
         model: impl Into<Arc<str>>,
         embedding_model: impl Into<Arc<str>>,
         system_prompt: impl Into<Arc<str>>,
         insights: SharedInsights,
+        tools: Vec<Arc<dyn Tool>>,
     ) -> Self {
         let embedding_model: Arc<str> = embedding_model.into();
 
         let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(GetCurrentDatetime));
-        registry.register(Arc::new(Wait));
-        registry.register(Arc::new(SendMessage::new(bot.clone(), bot_user_id)));
-        registry.register(Arc::new(SendReaction::new(bot.clone())));
-        registry.register(Arc::new(ListKnownChats::new(buffer.clone())));
-        registry.register(Arc::new(ReadChatHistory::new(buffer.clone())));
-        registry.register(Arc::new(Remember::new(
-            llm.clone(),
-            memory.clone(),
-            memory_settings.clone(),
-            embedding_model.clone(),
-        )));
+        for tool in tools {
+            registry.register(tool);
+        }
 
         Self {
             bot,
@@ -125,7 +114,7 @@ where
         self.run_turn(chat_id, from.id.0 as i64, incoming).await
     }
 
-    /// Правки в Telegram применяются только к тексту/подписи — дайс, стикер,
+    /// Правки в Telegram применяются только к тексту/подписи — dice, стикер,
     /// опрос и т.п. отредактировать в другой тип контента нельзя, поэтому
     /// здесь достаточно текста/подписи, в отличие от `describe_message`.
     pub async fn handle_edited_message(&self, msg: Message) -> Result<(), AppError> {
@@ -197,16 +186,16 @@ where
     /// чату, буфер, tool-calling цикл, отправка ответа, фоновое извлечение
     /// памяти. Захват `chat_locks` здесь, а не в каждом из входов, потому что
     /// сериализация нужна вокруг push/LLM-вызова/ответа, а не вокруг разбора
-    /// конкретного вида апдейта.
+    /// конкретного вида update.
     async fn run_turn(
         &self,
         chat_id: ChatId,
         user_id: i64,
         incoming: BufferedMessage,
     ) -> Result<(), AppError> {
-        // Держим до конца функции (обычный drop в конце скоупа); фоновое
-        // извлечение памяти ниже этим локом не оборачивается — оно не должно
-        // блокировать обработку следующего апдейта.
+        // Держим до конца функции (обычный drop в конце scope); фоновое
+        // извлечение памяти ниже этим lock не оборачивается — оно не должно
+        // блокировать обработку следующего update.
         let _chat_guard = self.chat_locks.lock(chat_id.0).await;
 
         let query = incoming.text.clone();
@@ -220,13 +209,8 @@ where
         let messages = self
             .build_messages(&chat_buffer, chat_id, user_id, Some(&query))
             .await;
-        let ctx = ToolContext {
-            chat_id,
-            user_id,
-            buffer: self.buffer.clone(),
-        };
 
-        let (text, last_usage) = self.run_tool_loop(chat_id, &ctx, messages, true).await?;
+        let (text, last_usage) = self.run_tool_loop(chat_id, messages, true).await?;
         let Some(text) = text else {
             return Ok(());
         };
@@ -237,10 +221,10 @@ where
         Ok(())
     }
 
-    /// Проактивный ход — воркер (`proactive.rs`) периодически выбирает
+    /// Про активный ход — worker (`proactive.rs`) периодически выбирает
     /// малоактивный чат и даёт модели шанс написать первой. В отличие от
-    /// `run_turn`: нет входящего сообщения (подсказка-нудж добавляется поверх
-    /// транскрипта, но в буфер не кладётся — это не реальное событие), и при
+    /// `run_turn`: нет входящего сообщения (подсказка-нужд добавляется поверх
+    /// transcript, но в буфер не кладётся — это не реальное событие), и при
     /// исчерпании итераций без решения ответ не форсируется — промолчать тут
     /// нормальный исход, а не невежливость.
     pub async fn run_proactive(&self, chat_id: ChatId) -> Result<(), AppError> {
@@ -256,13 +240,7 @@ where
             .await;
         messages.push(ChatMessage::user(PROACTIVE_NUDGE_PROMPT.trim()));
 
-        let ctx = ToolContext {
-            chat_id,
-            user_id: self.bot_user_id,
-            buffer: self.buffer.clone(),
-        };
-
-        let (text, last_usage) = self.run_tool_loop(chat_id, &ctx, messages, false).await?;
+        let (text, last_usage) = self.run_tool_loop(chat_id, messages, false).await?;
         let Some(text) = text else {
             tracing::debug!(chat_id = chat_id.0, "proactive: model chose not to write");
             return Ok(());
@@ -274,7 +252,7 @@ where
         Ok(())
     }
 
-    /// Собирает системный промпт из статической личности, `insights`
+    /// Собирает системный prompt из статической личности, `insights`
     /// (обновляется ночной консолидацией), `commitments` этого чата
     /// (обновляется вместе с извлечением фактов, см. `memory::maybe_extract`)
     /// и автоматически найденных релевантных фактов долгосрочной памяти по
@@ -382,14 +360,13 @@ where
     }
 
     /// Цикл вызовов LLM + диспетчеризация инструментов, общий для обычного
-    /// хода и проактивного. Возвращает решённый моделью текст (`None`, если
+    /// хода и про активного. Возвращает решённый моделью текст (`None`, если
     /// она вызвала `wait` или — при `force_final_answer: false` — просто
     /// исчерпала итерации без решения) и `Usage` последнего вызова (нужна
     /// вызывающему для решения о фоновом извлечении памяти).
     async fn run_tool_loop(
         &self,
         chat_id: ChatId,
-        ctx: &ToolContext<B>,
         mut messages: Vec<ChatMessage>,
         force_final_answer: bool,
     ) -> Result<(Option<String>, Usage), AppError> {
@@ -408,16 +385,16 @@ where
             if calls.is_empty() {
                 tracing::debug!(chat_id = chat_id.0, iteration = i, "model requested no tools");
             } else {
-                let names: Vec<&str> = calls.iter().map(|c| c.function.name.as_str()).collect();
+                let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
                 tracing::debug!(chat_id = chat_id.0, iteration = i, tools = ?names, "model requested tool calls");
             }
 
-            if let Some(wait_call) = calls.iter().find(|c| c.function.name == "wait") {
+            if let Some(wait_call) = calls.iter().find(|c| c.name == "wait") {
                 tracing::debug!(
                     chat_id = chat_id.0,
                     "model chose to wait, ending turn silently"
                 );
-                self.tools.dispatch(wait_call, ctx).await;
+                self.tools.dispatch(wait_call).await;
                 return Ok((None, last_usage));
             }
 
@@ -428,7 +405,7 @@ where
 
             messages.push(reply);
             for call in &calls {
-                let result = self.tools.dispatch(call, ctx).await;
+                let result = self.tools.dispatch(call).await;
                 messages.push(ChatMessage::tool(call.id.clone(), result));
             }
         }
@@ -501,7 +478,7 @@ where
 }
 
 /// Текстовое описание содержимого сообщения — вместо голого `.text()`, чтобы
-/// опросы/дайсы/геолокация/контакты/стикеры/подписи тоже попадали в буфер и
+/// опросы/dice/геолокация/контакты/стикеры/подписи тоже попадали в буфер и
 /// проходили через общий tool-calling цикл, а не отбрасывались молча. Сама
 /// медиа-часть (фото/стикер/голос) не разбирается — это отдельная, более
 /// дорогая задача (нужен доп. вызов другой модели).
@@ -538,12 +515,12 @@ fn describe_message(msg: &Message) -> Option<String> {
     }
     if let Some(venue) = msg.venue() {
         return Some(format!(
-            "поделился геолокацией: {} ({})",
+            "поделился гео локацией: {} ({})",
             venue.title, venue.address
         ));
     }
     if msg.location().is_some() {
-        return Some("поделился геолокацией".to_owned());
+        return Some("поделился гео-локацией".to_owned());
     }
     if let Some(contact) = msg.contact() {
         let last_name = contact.last_name.clone().unwrap_or_default();

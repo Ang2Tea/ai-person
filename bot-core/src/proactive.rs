@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use rand::RngExt;
 use teloxide::types::ChatId;
 
-use contracts::Storage;
+use contracts::{Llm, Storage};
 
 use crate::bot::ChatBot;
 use crate::buffer::BufferStore;
@@ -14,8 +14,9 @@ use crate::settings::ProactiveSettings;
 /// даёт модели шанс написать в него первой (`ChatBot::run_proactive`) — сама
 /// отправка (или отказ) остаётся решением модели, воркер только выбирает,
 /// в какой чат постучаться и когда.
-pub fn spawn_task<B>(chat_bot: ChatBot<B>, buffer: BufferStore<B>, settings: ProactiveSettings)
+pub fn spawn_task<L, B>(chat_bot: ChatBot<L, B>, buffer: BufferStore<B>, settings: ProactiveSettings)
 where
+    L: Llm + Clone + Send + Sync + 'static,
     B: Storage + Clone + Send + Sync + 'static,
 {
     tokio::spawn(async move {

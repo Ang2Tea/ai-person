@@ -1,11 +1,9 @@
+use contracts::{Storage, Tool, ToolError, ToolSpec};
 use serde_json::{Value, json};
+use std::future::Future;
 use std::pin::Pin;
 
-use contracts::Storage;
-
 use crate::buffer::BufferStore;
-use crate::errors::ToolError;
-use crate::tools::{Tool, ToolContext, is_chat_access_allowed};
 
 pub struct ReadChatHistory<B> {
     buffer: BufferStore<B>,
@@ -17,7 +15,7 @@ impl<B> ReadChatHistory<B> {
     }
 }
 
-impl<B> Tool<B> for ReadChatHistory<B>
+impl<B> Tool for ReadChatHistory<B>
 where
     B: Storage + Clone + Send + Sync + 'static,
 {
@@ -25,51 +23,38 @@ where
         "read_chat_history"
     }
 
-    fn spec(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "read_chat_history",
-                "description": "Показывает недавнюю переписку из другого известного чата (не \
-текущего) — по id, который можно узнать через `list_known_chats`. Используй, когда нужно \
-продолжить тему из другого разговора или явно попросили посмотреть переписку с кем-то — не \
-читай чужие чаты просто из любопытства.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "chat_id": {
-                            "type": "integer",
-                            "description": "id чата, чью историю нужно посмотреть",
-                        },
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_chat_history".to_owned(),
+            description: "Показывает недавнюю переписку из известного чата — по id, который \
+можно узнать через `list_known_chats`. Используй, когда нужно продолжить тему из другого \
+разговора или явно попросили посмотреть переписку с кем-то — не читай чужие чаты просто из \
+любопытства."
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": {
+                        "type": "integer",
+                        "description": "id чата, чью историю нужно посмотреть",
                     },
-                    "required": ["chat_id"],
                 },
-            },
-        })
+                "required": ["chat_id"],
+            }),
+        }
     }
 
     fn call<'a>(
         &self,
         args: Value,
-        ctx: &ToolContext<B>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         let buffer = self.buffer.clone();
-        let current_chat_id = ctx.chat_id.0;
 
         Box::pin(async move {
             let chat_id = args
                 .get("chat_id")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| ToolError::Failed("missing 'chat_id' argument".to_owned()))?;
-
-            if !is_chat_access_allowed(current_chat_id, chat_id) {
-                tracing::warn!(
-                    current_chat_id,
-                    requested_chat_id = chat_id,
-                    "model tried to read_chat_history for a chat it isn't allowed to reach"
-                );
-                return Ok("доступ к другому чату не разрешён".to_owned());
-            }
 
             match buffer.get(chat_id).await {
                 Some(chat_buffer) => {

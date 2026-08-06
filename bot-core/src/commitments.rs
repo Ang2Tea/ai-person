@@ -1,94 +1,69 @@
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use contracts::Storage;
 
 use crate::errors::MemoryError;
 
-struct LocalCommitmentsStorage {
-    root: PathBuf,
-}
-
-impl LocalCommitmentsStorage {
-    fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-
-    fn path(&self, chat_id: i64) -> PathBuf {
-        self.root.join(format!("{chat_id}.md"))
-    }
-
-    async fn get(&self, chat_id: i64) -> Option<String> {
-        let path = self.path(chat_id);
-
-        tokio::task::spawn_blocking(move || fs::read_to_string(&path).ok())
-            .await
-            .expect("blocking task panicked")
-    }
-
-    async fn set(&self, chat_id: i64, text: String) -> Result<(), MemoryError> {
-        let root = self.root.clone();
-        let path = self.path(chat_id);
-        let tmp_path = root.join(format!("{chat_id}.md.tmp"));
-
-        tokio::task::spawn_blocking(move || {
-            fs::create_dir_all(&root)?;
-            fs::write(&tmp_path, text)?;
-            fs::rename(&tmp_path, &path)?;
-            Ok(())
-        })
-        .await
-        .expect("blocking task panicked")
-    }
-}
-
 /// Курируемый LLM список открытых задач/обещаний, отдельно по чату — отдельный
-/// md-файл на чат (`{chat_id}.md`), не часть буфера переписки и не факт
+/// ключ на чат (`{chat_id}.md`), не часть буфера переписки и не факт
 /// дневника. Обновляется тем же вызовом, что и извлечение фактов (см.
 /// `memory::maybe_extract`), читается на каждый ход (`ChatBot::build_messages`).
 #[derive(Clone)]
-pub struct CommitmentsStore(Arc<LocalCommitmentsStorage>);
+pub struct CommitmentsStore<S> {
+    storage: S,
+}
 
-impl CommitmentsStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self(Arc::new(LocalCommitmentsStorage::new(root)))
+impl<S> CommitmentsStore<S>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    pub fn new(storage: S) -> Self {
+        Self { storage }
     }
 
-    /// `None`, если для этого чата ещё ничего не сохранено — в отличие от
-    /// пустой строки (список есть, но сейчас пуст).
+    fn key(chat_id: i64) -> String {
+        format!("{chat_id}.md")
+    }
+
+    /// `None`, если для этого чата ещё ничего не сохранено (или чтение не
+    /// удалось по любой другой причине) — в отличие от пустой строки (список
+    /// есть, но сейчас пуст).
     pub async fn get(&self, chat_id: i64) -> Option<String> {
-        self.0.get(chat_id).await
+        self.storage.get(Self::key(chat_id)).await.ok()
     }
 
     pub async fn set(&self, chat_id: i64, text: String) -> Result<(), MemoryError> {
-        self.0.set(chat_id, text).await
+        self.storage.set(Self::key(chat_id), text).await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use storage_fs::FileStorage;
 
-    fn temp_dir() -> PathBuf {
-        std::env::temp_dir().join(format!(
+    fn temp_store() -> (CommitmentsStore<FileStorage>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
             "ai-chat-person-commitments-test-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ))
+        ));
+        (
+            CommitmentsStore::new(FileStorage::new(dir.to_str().unwrap())),
+            dir,
+        )
     }
 
     #[tokio::test]
     async fn unknown_chat_returns_none() {
-        let dir = temp_dir();
-        let store = CommitmentsStore::new(&dir);
+        let (store, dir) = temp_store();
 
         assert_eq!(store.get(1).await, None);
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn set_then_get_round_trips() {
-        let dir = temp_dir();
-        let store = CommitmentsStore::new(&dir);
+        let (store, dir) = temp_store();
 
         store
             .set(1, "напомнить про дедлайн".to_owned())
@@ -99,18 +74,17 @@ mod tests {
         // Другой чат не видит чужой список.
         assert_eq!(store.get(2).await, None);
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn set_overwrites_previous_value() {
-        let dir = temp_dir();
-        let store = CommitmentsStore::new(&dir);
+        let (store, dir) = temp_store();
 
         store.set(1, "первое".to_owned()).await.expect("set succeeds");
         store.set(1, "второе".to_owned()).await.expect("set succeeds");
         assert_eq!(store.get(1).await, Some("второе".to_owned()));
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

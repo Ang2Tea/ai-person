@@ -1,53 +1,40 @@
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use contracts::{Storage, StorageError};
 
 use crate::errors::MemoryError;
 use crate::memory::record::MemoryRecord;
 
-pub struct LocalMemoryStorage {
-    root: PathBuf,
+#[derive(Clone)]
+pub struct MemoryStore<S> {
+    storage: S,
 }
 
-impl LocalMemoryStorage {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+impl<S> MemoryStore<S>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    pub fn new(storage: S) -> Self {
+        Self { storage }
     }
 
-    /// Читает и парсит только те файлы, чьё имя проходит `predicate` — само имя
+    /// Читает и парсит только те записи, чьё имя (уже полученное дешёвым
+    /// листингом, без чтения содержимого) проходит `predicate` — само имя
     /// кодирует `origin_chat_id`/`visibility`/`about_users` (см.
-    /// `MemoryRecord::filename`), так что нерелевантные записи отсеиваются
-    /// дешёвым листингом директории, не открывая и не парся их содержимое
-    /// (включая вектор эмбеддинга — самую дорогую часть файла).
+    /// `MemoryRecord::filename`).
     pub async fn list_filtered(
         &self,
         predicate: impl Fn(&str) -> bool + Send + 'static,
     ) -> Result<Vec<MemoryRecord>, MemoryError> {
-        let root = self.root.clone();
-        tokio::task::spawn_blocking(move || {
-            if !root.exists() {
-                return Ok(Vec::new());
-            }
+        let names = self.storage.list(String::new()).await?;
 
-            let mut records = Vec::new();
-            for entry in fs::read_dir(&root)? {
-                let path = entry?.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                if !predicate(name) {
-                    continue;
-                }
-                let raw = fs::read_to_string(&path)?;
-                records.push(MemoryRecord::from_markdown(&raw)?);
+        let mut records = Vec::new();
+        for name in names {
+            if !name.ends_with(".md") || !predicate(&name) {
+                continue;
             }
-            Ok(records)
-        })
-        .await
-        .expect("blocking task panicked")
+            let raw = self.storage.get(name).await?;
+            records.push(MemoryRecord::from_markdown(&raw)?);
+        }
+        Ok(records)
     }
 
     pub async fn list_all(&self) -> Result<Vec<MemoryRecord>, MemoryError> {
@@ -55,72 +42,24 @@ impl LocalMemoryStorage {
     }
 
     pub async fn append(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
-        let root = self.root.clone();
-        let filename = record.filename();
-        let content = record.to_markdown();
-
-        tokio::task::spawn_blocking(move || {
-            fs::create_dir_all(&root)?;
-            let final_path = root.join(&filename);
-            // Временный файл + rename — атомарно на одной файловой системе,
-            // защищает от битого факт-файла при падении процесса посреди записи.
-            let tmp_path = root.join(format!("{filename}.tmp"));
-            fs::write(&tmp_path, content)?;
-            fs::rename(&tmp_path, &final_path)?;
-            Ok(())
-        })
-        .await
-        .expect("blocking task panicked")
+        self.storage
+            .set(record.filename(), record.to_markdown()?)
+            .await?;
+        Ok(())
     }
 
     pub async fn touch(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
         // Имя файла зависит только от origin_chat_id/visibility/about_users/id —
-        // они не меняются после создания, так что это всегда тот же файл.
+        // они не меняются после создания, так что это всегда тот же ключ.
         self.append(record).await
     }
 
     pub async fn remove(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
-        let path = self.root.join(record.filename());
-
-        tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
+        match self.storage.delete(record.filename()).await {
             Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        })
-        .await
-        .expect("blocking task panicked")
-    }
-}
-
-#[derive(Clone)]
-pub struct MemoryStore(Arc<LocalMemoryStorage>);
-
-impl MemoryStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self(Arc::new(LocalMemoryStorage::new(root)))
-    }
-
-    pub async fn list_filtered(
-        &self,
-        predicate: impl Fn(&str) -> bool + Send + 'static,
-    ) -> Result<Vec<MemoryRecord>, MemoryError> {
-        self.0.list_filtered(predicate).await
-    }
-
-    pub async fn list_all(&self) -> Result<Vec<MemoryRecord>, MemoryError> {
-        self.0.list_all().await
-    }
-
-    pub async fn append(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
-        self.0.append(record).await
-    }
-
-    pub async fn touch(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
-        self.0.touch(record).await
-    }
-
-    pub async fn remove(&self, record: &MemoryRecord) -> Result<(), MemoryError> {
-        self.0.remove(record).await
+            Err(StorageError::NotFound(_)) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
@@ -128,11 +67,16 @@ impl MemoryStore {
 mod tests {
     use super::*;
     use crate::memory::record::Visibility;
+    use storage_fs::FileStorage;
+
+    fn temp_store() -> (MemoryStore<FileStorage>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ai-chat-person-test-{}", uuid_like()));
+        (MemoryStore::new(FileStorage::new(dir.to_str().unwrap())), dir)
+    }
 
     #[tokio::test]
     async fn remove_deletes_record_file() {
-        let dir = std::env::temp_dir().join(format!("ai-chat-person-test-{}", uuid_like()));
-        let store = MemoryStore::new(&dir);
+        let (store, dir) = temp_store();
 
         let record = MemoryRecord::new("факт для удаления", 0.0, Visibility::Private, vec![], 1, vec![1.0]);
         store.append(&record).await.expect("append succeeds");
@@ -144,7 +88,7 @@ mod tests {
         // Повторное удаление уже отсутствующего файла не должно быть ошибкой.
         store.remove(&record).await.expect("remove is idempotent");
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn uuid_like() -> String {

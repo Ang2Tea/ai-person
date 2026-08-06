@@ -1,11 +1,4 @@
-use std::env;
-use std::path::{Path, PathBuf};
-
-use config::{Config, ConfigError};
 use serde::Deserialize;
-
-const CONFIG_PATH_ENV: &str = "CONFIG_PATH";
-const DEFAULT_CONFIG_PATH: &str = "config.toml";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PersonalityFiles {
@@ -20,28 +13,6 @@ pub struct PersonalityFiles {
 pub struct PersonalitySettings {
     pub path: String,
     pub files: PersonalityFiles,
-}
-
-impl PersonalitySettings {
-    pub fn system_prompt_path(&self) -> PathBuf {
-        Path::new(&self.path).join(&self.files.system_prompt)
-    }
-
-    pub fn working_memory_path(&self) -> PathBuf {
-        Path::new(&self.path).join(&self.files.working_memory)
-    }
-
-    pub fn diary_dir_path(&self) -> PathBuf {
-        Path::new(&self.path).join(&self.files.diary_dir)
-    }
-
-    pub fn insights_path(&self) -> PathBuf {
-        Path::new(&self.path).join(&self.files.insights)
-    }
-
-    pub fn commitments_dir_path(&self) -> PathBuf {
-        Path::new(&self.path).join(&self.files.commitments_dir)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,20 +40,13 @@ pub struct ProactiveSettings {
     pub min_inactivity_minutes: i64,
 }
 
+/// Только форма данных — как их загружать (файл, env, что угодно ещё)
+/// bot-core не знает и не должен: это забота вызывающего бинарника
+/// (см. `app::load_settings`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     pub personality: PersonalitySettings,
     pub memory: MemorySettings,
     pub llm: LlmSettings,
     pub proactive: ProactiveSettings,
-}
-
-impl Settings {
-    pub fn load() -> Result<Self, ConfigError> {
-        let path = env::var(CONFIG_PATH_ENV).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
-        Config::builder()
-            .add_source(config::File::from(Path::new(&path)))
-            .build()?
-            .try_deserialize()
-    }
 }

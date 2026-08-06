@@ -1,82 +1,86 @@
-mod access;
-mod context;
 mod get_current_datetime;
 mod list_known_chats;
 mod read_chat_history;
 mod remember;
-mod send_message;
-mod send_reaction;
 mod wait;
 
-pub use access::is_chat_access_allowed;
-pub use context::ToolContext;
 pub use get_current_datetime::GetCurrentDatetime;
 pub use list_known_chats::ListKnownChats;
 pub use read_chat_history::ReadChatHistory;
 pub use remember::Remember;
-pub use send_message::SendMessage;
-pub use send_reaction::SendReaction;
 pub use wait::Wait;
 
-use contracts::ToolCall;
+use contracts::{Llm, Storage, Tool, ToolCall, ToolSpec};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::errors::ToolError;
+use crate::buffer::BufferStore;
+use crate::memory::MemoryStore;
+use crate::settings::MemorySettings;
 
-pub trait Tool<B>: Send + Sync {
-    fn name(&self) -> &str;
-    fn spec(&self) -> Value;
-    fn call<'a>(
-        &self,
-        args: Value,
-        ctx: &ToolContext<B>,
-    ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
+/// Channel-агностике инструменты — не зависят ни от какого конкретного
+/// канала связи, регистрируются вместе с инструментами, которые поставляет
+/// сам канал (например `channel_telegram_bot::tools`).
+pub fn tools<L, B>(
+    buffer: BufferStore<B>,
+    llm: L,
+    memory: MemoryStore<B>,
+    memory_settings: MemorySettings,
+    embedding_model: Arc<str>,
+) -> Vec<Arc<dyn Tool>>
+where
+    L: Llm + Clone + Send + Sync + 'static,
+    B: Storage + Clone + Send + Sync + 'static,
+{
+    vec![
+        Arc::new(GetCurrentDatetime),
+        Arc::new(Wait),
+        Arc::new(ListKnownChats::new(buffer.clone())),
+        Arc::new(ReadChatHistory::new(buffer)),
+        Arc::new(Remember::new(llm, memory, memory_settings, embedding_model)),
+    ]
 }
 
-pub struct ToolRegistry<B> {
-    tools: HashMap<String, Arc<dyn Tool<B>>>,
+#[derive(Default)]
+pub struct ToolRegistry {
+    tools: HashMap<String, Arc<dyn Tool>>,
 }
 
-impl<B> Default for ToolRegistry<B> {
-    fn default() -> Self {
-        Self {
-            tools: HashMap::new(),
-        }
-    }
-}
-
-impl<B> ToolRegistry<B> {
+impl ToolRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn register(&mut self, tool: Arc<dyn Tool<B>>) {
-        self.tools.insert(tool.name().to_string(), tool);
+    /// Ключ — `spec().name`, а не `tool.name()`: модель зовёт инструмент по
+    /// имени из `spec()` (это же имя разослано ей в списке доступных tools),
+    /// `tool.name()` — внутренний идентификатор, который может отличаться
+    /// (например, с префиксом канала — `telegram_send_message`), чтобы не
+    /// конфликтовать с одноимёнными инструментами других каналов.
+    pub fn register(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.spec().name.clone(), tool);
     }
 
-    pub fn specs(&self) -> Vec<Value> {
+    pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
     }
 
-    pub async fn dispatch(&self, call: &ToolCall, ctx: &ToolContext<B>) -> String {
-        let Some(tool) = self.tools.get(&call.function.name) else {
-            tracing::error!(tool = %call.function.name, "unknown tool requested by model");
-            return format!("error: unknown tool '{}'", call.function.name);
+    pub async fn dispatch(&self, call: &ToolCall) -> String {
+        let Some(tool) = self.tools.get(&call.name) else {
+            tracing::error!(tool = %call.name, "unknown tool requested by model");
+            return format!("error: unknown tool '{}'", call.name);
         };
-        let args: Value = match serde_json::from_str(&call.function.arguments) {
+        let args: Value = match serde_json::from_str(&call.arguments) {
             Ok(v) => v,
             Err(err) => {
-                tracing::error!(tool = %call.function.name, %err, arguments = %call.function.arguments, "bad tool arguments json");
+                tracing::error!(tool = %call.name, %err, arguments = %call.arguments, "bad tool arguments json");
                 return format!("error: bad arguments json: {err}");
             }
         };
-        match tool.call(args, ctx).await {
+        match tool.call(args).await {
             Ok(s) => s,
             Err(err) => {
-                tracing::error!(tool = %call.function.name, %err, "tool call failed");
+                tracing::error!(tool = %call.name, %err, "tool call failed");
                 format!("error: {err}")
             }
         }

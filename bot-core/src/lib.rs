@@ -7,5 +7,6 @@ pub mod errors;
 pub mod idle_extraction;
 pub mod memory;
 pub mod proactive;
+pub mod scheduler;
 pub mod settings;
 pub mod tools;

@@ -9,10 +9,6 @@ use tokio::sync::RwLock;
 
 use crate::errors::BufferError;
 
-/// Ключ, под которым весь буфер (все чаты разом) лежит в `Storage` — буфер
-/// всегда читается/пишется целиком, отдельного ключа на чат не заводим.
-const BUFFER_KEY: &str = "working_memory.json";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferedMessage {
     pub telegram_message_id: i32,
@@ -91,6 +87,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct BufferStore<S> {
     storage: S,
+    key: String,
     buffers: Arc<RwLock<HashMap<i64, ChatBuffer>>>,
     dirty: Arc<AtomicBool>,
 }
@@ -99,14 +96,18 @@ impl<S> BufferStore<S>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
-    pub async fn new(storage: S) -> Result<Self, BufferError> {
-        let buffers = match storage.get(BUFFER_KEY.to_owned()).await {
+    /// `key` — под каким ключом весь буфер (все чаты разом) лежит в
+    /// `Storage`; берётся из конфига (`personality.files.working_memory`),
+    /// а не зашивается константой.
+    pub async fn new(storage: S, key: String) -> Result<Self, BufferError> {
+        let buffers = match storage.get(key.clone()).await {
             Ok(raw) => serde_json::from_str(&raw)?,
             Err(StorageError::NotFound(_)) => HashMap::new(),
             Err(err) => return Err(BufferError::Storage(err)),
         };
         let store = Self {
             storage,
+            key,
             buffers: Arc::new(RwLock::new(buffers)),
             dirty: Arc::new(AtomicBool::new(false)),
         };
@@ -116,10 +117,9 @@ where
 
     fn spawn_flush_task(&self) {
         let store = self.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
-            loop {
-                ticker.tick().await;
+        crate::scheduler::spawn_periodic(FLUSH_INTERVAL, move || {
+            let store = store.clone();
+            async move {
                 if let Err(err) = store.flush().await {
                     tracing::error!(%err, "Can`t flush chat buffer to storage");
                 }
@@ -161,7 +161,7 @@ where
             serde_json::to_string_pretty(&*buffers)?
         };
         self.storage
-            .set(BUFFER_KEY.to_owned(), json)
+            .set(self.key.clone(), json)
             .await
             .map_err(BufferError::Storage)?;
         self.dirty.store(false, Ordering::Release);

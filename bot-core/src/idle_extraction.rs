@@ -3,8 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use contracts::Storage;
-use llm_timeweb::TimewebClient;
+use contracts::{Llm, Storage};
 
 use crate::buffer::{BufferStore, ChatBuffer};
 use crate::commitments::CommitmentsStore;
@@ -22,22 +21,28 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// оставляет в буфере после себя) — смысл разговора уже случился, ждать
 /// накопления токенов незачем.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_task<B>(
-    llm: TimewebClient,
-    memory: MemoryStore,
+pub fn spawn_task<L, B>(
+    llm: L,
+    memory: MemoryStore<B>,
     buffer: BufferStore<B>,
-    commitments: CommitmentsStore,
+    commitments: CommitmentsStore<B>,
     settings: MemorySettings,
     model: Arc<str>,
     embedding_model: Arc<str>,
 ) where
+    L: Llm + Clone + Send + Sync + 'static,
     B: Storage + Clone + Send + Sync + 'static,
 {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(CHECK_INTERVAL);
-        loop {
-            ticker.tick().await;
+    crate::scheduler::spawn_periodic(CHECK_INTERVAL, move || {
+        let llm = llm.clone();
+        let memory = memory.clone();
+        let buffer = buffer.clone();
+        let commitments = commitments.clone();
+        let settings = settings.clone();
+        let model = model.clone();
+        let embedding_model = embedding_model.clone();
 
+        async move {
             for chat_id in buffer.chat_ids().await {
                 let Some(chat_buffer) = buffer.get(chat_id).await else {
                     continue;
