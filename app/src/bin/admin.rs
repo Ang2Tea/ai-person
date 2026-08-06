@@ -1,15 +1,8 @@
-use std::{env, fs, sync::Arc};
+use std::sync::Arc;
 
-use bot_core::{
-    buffer::BufferStore,
-    commitments::CommitmentsStore,
-    consolidation, memory,
-    memory::MemoryStore,
-    settings::Settings,
-};
+use app::{init_llm, init_storage, init_tracing, load_settings, personality_storage, read_insights};
+use bot_core::{consolidation, memory};
 use clap::{Parser, Subcommand};
-use llm_timeweb::TimewebClient;
-use storage_fs::FileStorage;
 use tokio::sync::RwLock;
 
 /// Ручные операции обслуживания — те же, что фоновые воркеры делают по расписанию,
@@ -40,23 +33,17 @@ enum Command {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_path_override(".env");
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    init_tracing();
 
     let cli = Cli::parse();
-    let settings = Settings::load()?;
+    let settings = load_settings()?;
 
-    let timeweb_token = env::var("TIMEWEB_KEY")?;
-    let llm = TimewebClient::try_new(&timeweb_token)?;
+    let llm = init_llm()?;
+    let (buffer, memory, commitments) = init_storage(&settings).await?;
+    let personality_storage = personality_storage(&settings);
 
-    let buffer_storage = FileStorage::new(&settings.personality.path);
-    let buffer = BufferStore::new(buffer_storage).await?;
-    let memory = MemoryStore::new(settings.personality.diary_dir_path());
-    let commitments = CommitmentsStore::new(settings.personality.commitments_dir_path());
-
-    let model = settings.llm.model;
-    let embedding_model = settings.llm.embedding_model;
+    let model = settings.llm.model.clone();
+    let embedding_model = settings.llm.embedding_model.clone();
 
     match cli.command {
         Command::Extract { chat_id } => {
@@ -89,8 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Готово.");
         }
         Command::Sleep => {
-            let initial_insights =
-                fs::read_to_string(settings.personality.insights_path()).unwrap_or_default();
+            let initial_insights = read_insights(&settings).await;
             let insights: consolidation::SharedInsights =
                 Arc::new(RwLock::new(Arc::from(initial_insights)));
 
@@ -102,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &model,
                 &embedding_model,
                 &settings.personality,
+                &personality_storage,
                 &insights,
             )
             .await?;

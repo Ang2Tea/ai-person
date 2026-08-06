@@ -1,18 +1,11 @@
-use std::{env, fs, sync::Arc};
+use std::{env, sync::Arc};
 
-use bot_core::{
-    bot::ChatBot,
-    buffer::BufferStore,
-    commitments::CommitmentsStore,
-    consolidation,
-    idle_extraction,
-    memory::MemoryStore,
-    proactive,
-    settings::Settings,
+use app::{
+    init_llm, init_storage, init_tracing, load_settings, personality_storage, read_insights,
+    read_system_prompt,
 };
+use bot_core::{bot::ChatBot, consolidation, idle_extraction, proactive};
 use futures::StreamExt;
-use llm_timeweb::TimewebClient;
-use storage_fs::FileStorage;
 use teloxide::{
     Bot,
     requests::Requester,
@@ -25,14 +18,12 @@ use tokio::sync::RwLock;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_path_override(".env");
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    init_tracing();
 
-    let settings = Settings::load()?;
+    let settings = load_settings()?;
 
     tracing::info!(
-        diary_dir = %settings.personality.diary_dir_path().display(),
+        diary_dir = %settings.personality.files.diary_dir,
         auto_retrieval_similarity_threshold = settings.memory.auto_retrieval_similarity_threshold,
         dedup_similarity_threshold = settings.memory.dedup_similarity_threshold,
         token_threshold = settings.memory.token_threshold,
@@ -43,22 +34,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bot: Bot = Bot::new(bot_token);
     let bot_user_id = bot.get_me().await?.id.0 as i64;
 
-    let timeweb_token = env::var("TIMEWEB_KEY")?;
-    let timeweb_client = TimewebClient::try_new(&timeweb_token)?;
+    let timeweb_client = init_llm()?;
+    let (buffer, memory, commitments) = init_storage(&settings).await?;
+    let personality_storage = personality_storage(&settings);
 
-    let buffer_storage = FileStorage::new(&settings.personality.path);
-    let buffer = BufferStore::new(buffer_storage).await?;
+    let system_prompt = read_system_prompt(&settings).await?;
 
-    let system_prompt = fs::read_to_string(settings.personality.system_prompt_path())?;
-    let memory = MemoryStore::new(settings.personality.diary_dir_path());
-    let commitments = CommitmentsStore::new(settings.personality.commitments_dir_path());
-
-    let initial_insights = fs::read_to_string(settings.personality.insights_path()).unwrap_or_default();
+    let initial_insights = read_insights(&settings).await;
     let insights: consolidation::SharedInsights =
         Arc::new(RwLock::new(Arc::from(initial_insights)));
 
     let model: Arc<str> = settings.llm.model.into();
     let embedding_model: Arc<str> = settings.llm.embedding_model.into();
+
+    let mut tools = bot_core::tools::tools(
+        buffer.clone(),
+        timeweb_client.clone(),
+        memory.clone(),
+        settings.memory.clone(),
+        embedding_model.clone(),
+    );
+    tools.extend(channel_telegram_bot::tools(
+        bot.clone(),
+        bot_user_id,
+        buffer.clone(),
+    ));
 
     consolidation::spawn_daily_task(
         timeweb_client.clone(),
@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model.clone(),
         embedding_model.clone(),
         settings.personality.clone(),
+        personality_storage,
         insights.clone(),
     );
 
@@ -92,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedding_model,
         system_prompt,
         insights,
+        tools,
     );
 
     proactive::spawn_task(chat_bot.clone(), buffer.clone(), settings.proactive);
