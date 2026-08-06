@@ -1,0 +1,15 @@
+[package]
+name = "channel-telegram-bot"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+contracts = { workspace = true }
+bot-core = { workspace = true }
+teloxide = "0.17.0"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
