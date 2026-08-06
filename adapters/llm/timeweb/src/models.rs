@@ -1,12 +1,11 @@
 use serde::Serialize;
-use serde_json::Value;
 
-use crate::wire::WireMessage;
+use crate::wire::{WireMessage, WireToolSpec};
 
 #[derive(Debug, Serialize)]
 pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: Vec<WireMessage>,
-    pub tools: &'a [Value],
+    pub tools: Vec<WireToolSpec>,
     pub temperature: f32,
 }

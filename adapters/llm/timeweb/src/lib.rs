@@ -3,25 +3,14 @@ mod models;
 mod timeweb_models;
 mod wire;
 
-use contracts::{ChatCompletion, ChatMessage, ToolCall, Usage};
-use serde_json::Value;
-use thiserror::Error;
+use contracts::{ChatCompletion, ChatMessage, Llm, LlmError, ToolCall, ToolSpec, Usage};
 
 use crate::{
     embedding_models::{EmbeddingRequest, EmbeddingResponse},
     models::ChatRequest,
     timeweb_models::ChatResponse,
-    wire::WireMessage,
+    wire::{WireMessage, WireToolSpec},
 };
-
-#[derive(Debug, Error)]
-pub enum LlmError {
-    #[error("request failed: {0}")]
-    Request(#[from] reqwest::Error),
-
-    #[error("model returned no choices")]
-    EmptyResponse,
-}
 
 #[derive(Clone)]
 pub struct TimewebClient {
@@ -36,7 +25,8 @@ impl TimewebClient {
     pub fn try_new(api_key: impl Into<String>) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
-            .build()?;
+            .build()
+            .map_err(|e| LlmError::Request(e.to_string()))?;
 
         Ok(Self {
             http,
@@ -44,17 +34,19 @@ impl TimewebClient {
             endpoint: "https://api.timeweb.ai/v1".to_string(),
         })
     }
+}
 
-    pub async fn chat(
+impl Llm for TimewebClient {
+    async fn chat(
         &self,
         model: &str,
         messages: &[ChatMessage],
-        tools: &[Value],
+        tools: &[ToolSpec],
     ) -> Result<ChatCompletion, LlmError> {
         let req = ChatRequest {
             model,
             messages: messages.iter().map(WireMessage::from).collect(),
-            tools,
+            tools: tools.iter().map(WireToolSpec::from).collect(),
             temperature: TEMPERATURE,
         };
 
@@ -64,10 +56,13 @@ impl TimewebClient {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&req)
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| LlmError::Request(e.to_string()))?
             .json::<ChatResponse>()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
 
         let usage = Usage {
             prompt_tokens: resp.usage.prompt_tokens,
@@ -93,7 +88,7 @@ impl TimewebClient {
             .ok_or(LlmError::EmptyResponse)
     }
 
-    pub async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, LlmError> {
+    async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, LlmError> {
         let req = EmbeddingRequest { model, input };
 
         let resp = self
@@ -102,10 +97,13 @@ impl TimewebClient {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&req)
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| LlmError::Request(e.to_string()))?
             .json::<EmbeddingResponse>()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
 
         resp.data
             .into_iter()

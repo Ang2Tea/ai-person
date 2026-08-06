@@ -1,4 +1,4 @@
-use contracts::{ChatMessage, FunctionCall, ToolCall};
+use contracts::{ChatMessage, ToolCall, ToolSpec};
 use serde::{Deserialize, Serialize};
 
 /// JSON-форма сообщения в запросе к Timeweb — `contracts::ChatMessage` не
@@ -45,7 +45,10 @@ impl From<&ToolCall> for WireToolCall {
         Self {
             id: call.id.clone(),
             kind: call.kind.clone(),
-            function: WireFunctionCall::from(&call.function),
+            function: WireFunctionCall {
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            },
         }
     }
 }
@@ -55,7 +58,8 @@ impl From<WireToolCall> for ToolCall {
         Self {
             id: call.id,
             kind: call.kind,
-            function: call.function.into(),
+            name: call.function.name,
+            arguments: call.function.arguments,
         }
     }
 }
@@ -66,20 +70,32 @@ pub struct WireFunctionCall {
     pub arguments: String,
 }
 
-impl From<&FunctionCall> for WireFunctionCall {
-    fn from(function: &FunctionCall) -> Self {
-        Self {
-            name: function.name.clone(),
-            arguments: function.arguments.clone(),
-        }
-    }
+/// JSON-форма описания инструмента в запросе (конверт `{"type": "function",
+/// "function": {...}}`) — то самое провайдер-специфичное обёртывание вокруг
+/// `contracts::ToolSpec`, о котором сказано в его doc-comment'е.
+#[derive(Debug, Serialize)]
+pub struct WireToolSpec {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub function: WireFunctionSpec,
 }
 
-impl From<WireFunctionCall> for FunctionCall {
-    fn from(function: WireFunctionCall) -> Self {
+#[derive(Debug, Serialize)]
+pub struct WireFunctionSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+impl From<&ToolSpec> for WireToolSpec {
+    fn from(spec: &ToolSpec) -> Self {
         Self {
-            name: function.name,
-            arguments: function.arguments,
+            kind: "function",
+            function: WireFunctionSpec {
+                name: spec.name.clone(),
+                description: spec.description.clone(),
+                parameters: spec.parameters.clone(),
+            },
         }
     }
 }
