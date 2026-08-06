@@ -82,6 +82,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "llm-timeweb",
+ "serde",
  "storage-fs",
  "teloxide",
  "tokio",

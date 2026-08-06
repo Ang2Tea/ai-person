@@ -1,9 +1,11 @@
+mod settings;
+
+pub use settings::{LlmSettings, Settings};
+
 use std::env;
 use std::path::Path;
 
-use bot_core::{
-    buffer::BufferStore, commitments::CommitmentsStore, memory::MemoryStore, settings::Settings,
-};
+use bot_core::{buffer::BufferStore, commitments::CommitmentsStore, memory::MemoryStore};
 use contracts::Storage;
 use llm_timeweb::TimewebClient;
 use storage_fs::FileStorage;

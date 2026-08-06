@@ -9,6 +9,7 @@ channel-telegram-bot = { workspace = true }
 contracts = { workspace = true }
 llm-timeweb = { workspace = true }
 futures = { workspace = true }
+serde = { workspace = true }
 storage-fs = { workspace = true }
 teloxide = "0.17.0"
 tokio = { workspace = true }

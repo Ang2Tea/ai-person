@@ -16,12 +16,6 @@ pub struct PersonalitySettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct LlmSettings {
-    pub model: String,
-    pub embedding_model: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct MemorySettings {
     pub token_threshold: u32,
     pub dedup_similarity_threshold: f32,
@@ -38,15 +32,4 @@ pub struct ProactiveSettings {
     pub interval_minutes: u64,
     pub probability: f32,
     pub min_inactivity_minutes: i64,
-}
-
-/// Только форма данных — как их загружать (файл, env, что угодно ещё)
-/// bot-core не знает и не должен: это забота вызывающего бинарника
-/// (см. `app::load_settings`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct Settings {
-    pub personality: PersonalitySettings,
-    pub memory: MemorySettings,
-    pub llm: LlmSettings,
-    pub proactive: ProactiveSettings,
 }
