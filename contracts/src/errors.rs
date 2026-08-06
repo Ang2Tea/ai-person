@@ -18,3 +18,18 @@ pub enum StorageError {
     #[error("key not found: {0}")]
     NotFound(String),
 }
+
+#[derive(Debug, Error)]
+pub enum LlmError {
+    #[error("request failed: {0}")]
+    Request(String),
+
+    #[error("model returned no choices")]
+    EmptyResponse,
+}
+
+#[derive(Debug, Error)]
+pub enum ToolError {
+    #[error("tool failed: {0}")]
+    Failed(String),
+}
