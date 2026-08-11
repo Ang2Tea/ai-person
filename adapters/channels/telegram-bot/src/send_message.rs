@@ -1,4 +1,4 @@
-use bot_core::buffer::{BufferStore, BufferedMessage};
+use crate::history::{BufferStore, BufferedMessage};
 use chrono::Utc;
 use contracts::{Storage, Tool, ToolError, ToolSpec};
 use serde_json::{Value, json};
