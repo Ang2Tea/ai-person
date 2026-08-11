@@ -22,4 +22,11 @@ pub trait Tool: Send + Sync {
         &self,
         args: Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
+
+    /// Если `true`, вызов этого инструмента завершает ход модели молча
+    /// (без финального текстового ответа) — см. `bot::run_tool_loop`.
+    /// Дефолт `false` — большинство инструментов ход не завершают.
+    fn ends_turn(&self) -> bool {
+        false
+    }
 }
