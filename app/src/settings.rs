@@ -1,4 +1,5 @@
-use bot_core::settings::{MemorySettings, PersonalitySettings, ProactiveSettings};
+use channel_telegram_bot::settings::ProactiveSettings;
+use memory::{MemorySettings, PersonalitySettings};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

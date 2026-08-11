@@ -1,18 +1,16 @@
 use std::{env, sync::Arc};
 
-use app::{
-    init_llm, init_storage, init_tracing, load_settings, personality_storage, read_insights,
-    read_system_prompt,
-};
-use bot_core::{bot::ChatBot, consolidation, idle_extraction, proactive};
+use app::{init_history, init_llm, init_memory, init_tracing, load_settings};
+use bot_core::{bot::ChatBot, consolidation::ConsolidationJob, idle_extraction::IdleExtractionJob};
+use channel_telegram_bot::{dispatch, jobs::proactive::ProactiveJob};
+use contracts::BackgroundJob;
 use futures::StreamExt;
 use teloxide::{
     Bot,
     requests::Requester,
-    types::{AllowedUpdate, UpdateKind},
+    types::AllowedUpdate,
     update_listeners::{AsUpdateStream, Polling},
 };
-use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,68 +33,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bot_user_id = bot.get_me().await?.id.0 as i64;
 
     let timeweb_client = init_llm()?;
-    let (buffer, memory, commitments) = init_storage(&settings).await?;
-    let personality_storage = personality_storage(&settings);
+    let history = init_history(&settings).await?;
+    let memory = init_memory(&settings, timeweb_client.clone()).await?;
+    let history_dyn = channel_telegram_bot::channel_history(history.clone());
 
-    let system_prompt = read_system_prompt(&settings).await?;
+    let model: Arc<str> = settings.llm.model.clone().into();
 
-    let initial_insights = read_insights(&settings).await;
-    let insights: consolidation::SharedInsights =
-        Arc::new(RwLock::new(Arc::from(initial_insights)));
-
-    let model: Arc<str> = settings.llm.model.into();
-    let embedding_model: Arc<str> = settings.llm.embedding_model.into();
-
-    let mut tools = bot_core::tools::tools(
-        buffer.clone(),
-        timeweb_client.clone(),
-        memory.clone(),
-        settings.memory.clone(),
-        embedding_model.clone(),
-    );
+    let mut tools = bot_core::tools::tools(memory.clone());
     tools.extend(channel_telegram_bot::tools(
         bot.clone(),
         bot_user_id,
-        buffer.clone(),
+        history.clone(),
     ));
 
-    consolidation::spawn_daily_task(
-        timeweb_client.clone(),
-        memory.clone(),
-        settings.memory.clone(),
-        model.clone(),
-        embedding_model.clone(),
-        settings.personality.clone(),
-        personality_storage,
-        insights.clone(),
-    );
-
-    idle_extraction::spawn_task(
-        timeweb_client.clone(),
-        memory.clone(),
-        buffer.clone(),
-        commitments.clone(),
-        settings.memory.clone(),
-        model.clone(),
-        embedding_model.clone(),
-    );
-
     let chat_bot = ChatBot::new(
-        bot.clone(),
-        bot_user_id,
+        history_dyn.clone(),
+        memory.clone(),
         timeweb_client,
-        buffer.clone(),
-        memory,
-        settings.memory,
-        commitments,
         model,
-        embedding_model,
-        system_prompt,
-        insights,
+        settings.memory.token_threshold,
         tools,
     );
 
-    proactive::spawn_task(chat_bot.clone(), buffer.clone(), settings.proactive);
+    let jobs: Vec<Box<dyn BackgroundJob>> = vec![
+        Box::new(ConsolidationJob::new(memory.clone())),
+        Box::new(IdleExtractionJob::new(
+            history_dyn,
+            memory,
+            settings.memory.idle_extraction_after_minutes,
+        )),
+        Box::new(ProactiveJob::new(
+            bot.clone(),
+            bot_user_id,
+            chat_bot.clone(),
+            history.clone(),
+            settings.proactive,
+        )),
+    ];
+    for job in jobs {
+        job.spawn();
+    }
 
     tracing::info!("Starting bot");
 
@@ -123,15 +99,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
 
+                let bot = bot.clone();
                 let chat_bot = chat_bot.clone();
+                let history = history.clone();
                 tokio::spawn(async move {
-                    let result = match update.kind {
-                        UpdateKind::Message(msg) => chat_bot.handle_message(msg).await,
-                        UpdateKind::EditedMessage(msg) => chat_bot.handle_edited_message(msg).await,
-                        UpdateKind::MessageReaction(reaction) => chat_bot.handle_reaction(reaction).await,
-                        _ => Ok(()),
-                    };
-                    if let Err(err) = result {
+                    if let Err(err) =
+                        dispatch::handle_update(&bot, bot_user_id, &chat_bot, &history, update.kind).await
+                    {
                         tracing::error!(%err, "Error handling update");
                     }
                 });
@@ -143,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let Err(err) = buffer.flush().await {
+    if let Err(err) = history.flush().await {
         tracing::error!(%err, "Can`t flush chat buffer on shutdown");
     }
 

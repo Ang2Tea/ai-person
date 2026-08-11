@@ -8,6 +8,7 @@ bot-core = { workspace = true }
 channel-telegram-bot = { workspace = true }
 contracts = { workspace = true }
 llm-timeweb = { workspace = true }
+memory = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 storage-fs = { workspace = true }

@@ -4,29 +4,40 @@ pub use settings::{LlmSettings, Settings};
 
 use std::env;
 use std::path::Path;
+use std::sync::Arc;
 
-use bot_core::{buffer::BufferStore, commitments::CommitmentsStore, memory::MemoryStore};
+use channel_telegram_bot::history::BufferStore;
 use contracts::Storage;
 use llm_timeweb::TimewebClient;
+use memory::{CommitmentsStore, MemoryStore, PersonalityMemory, SharedInsights};
 use storage_fs::FileStorage;
+use tokio::sync::RwLock;
 
 const CONFIG_PATH_ENV: &str = "CONFIG_PATH";
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
 
 /// bot-core знает только форму `Settings`, не то, откуда они берутся —
 /// загрузка (файл, env, что угодно ещё) целиком забота вызывающего
-/// бинарника.
+/// бинарника. Env (`APP__...`) поверх файла — второй, необязательный
+/// источник, чтобы в контейнере/CI можно было переопределить отдельные
+/// поля без перезаписи всего файла (`.required(false)`, т.к. в некоторых
+/// окружениях конфиг целиком может задаваться только через env).
 pub fn load_settings() -> Result<Settings, config::ConfigError> {
     let path = env::var(CONFIG_PATH_ENV).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     config::Config::builder()
-        .add_source(config::File::from(Path::new(&path)))
+        .add_source(config::File::from(Path::new(&path)).required(false))
+        .add_source(
+            config::Environment::with_prefix("APP")
+                .try_parsing(true)
+                .separator("__"),
+        )
         .build()?
         .try_deserialize()
 }
 
 /// Общая для `bot`/`admin` инициализация — оба бинарника поднимают один и
-/// тот же набор зависимостей (логирование, LLM-клиент, буфер/дневник/
-/// commitments), только по-разному их используют дальше.
+/// тот же набор зависимостей (логирование, LLM-клиент, история/память),
+/// только по-разному их используют дальше.
 pub fn init_tracing() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -48,24 +59,22 @@ fn personality_subdir(settings: &Settings, relative: &str) -> String {
         .into_owned()
 }
 
-pub async fn init_storage(
-    settings: &Settings,
-) -> Result<
-    (
-        BufferStore<FileStorage>,
-        MemoryStore<FileStorage>,
-        CommitmentsStore<FileStorage>,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let buffer_storage = FileStorage::new(&settings.personality.path);
-    let buffer = BufferStore::new(
-        buffer_storage,
-        settings.personality.files.working_memory.clone(),
-    )
-    .await?;
+/// История переписки (канал) — забота `channel-telegram-bot`, `app` только
+/// собирает конкретный `Storage`-backend для неё.
+pub async fn init_history(settings: &Settings) -> Result<BufferStore<FileStorage>, Box<dyn std::error::Error>> {
+    let storage = personality_storage(settings);
+    let history = BufferStore::new(storage, settings.personality.files.working_memory.clone()).await?;
+    Ok(history)
+}
 
-    let memory = MemoryStore::new(FileStorage::new(&personality_subdir(
+/// Долгосрочная память личности (дневник + commitments + insights), собранная
+/// за `contracts::Memory` — `app` единственный, кто видит конкретный тип
+/// `PersonalityMemory<TimewebClient, FileStorage>`.
+pub async fn init_memory(
+    settings: &Settings,
+    llm: TimewebClient,
+) -> Result<PersonalityMemory<TimewebClient, FileStorage>, Box<dyn std::error::Error>> {
+    let store = MemoryStore::new(FileStorage::new(&personality_subdir(
         settings,
         &settings.personality.files.diary_dir,
     )));
@@ -74,13 +83,28 @@ pub async fn init_storage(
         &settings.personality.files.commitments_dir,
     )));
 
-    Ok((buffer, memory, commitments))
+    let system_prompt = read_system_prompt(settings).await?;
+    let initial_insights = read_insights(settings).await;
+    let insights: SharedInsights = Arc::new(RwLock::new(Arc::from(initial_insights)));
+
+    Ok(PersonalityMemory::new(
+        llm,
+        store,
+        commitments,
+        insights,
+        system_prompt,
+        settings.llm.model.clone(),
+        settings.llm.embedding_model.clone(),
+        settings.memory.clone(),
+        personality_storage(settings),
+        settings.personality.files.system_prompt.clone(),
+        settings.personality.files.insights.clone(),
+    ))
 }
 
 /// Отдельный `FileStorage`, рядом с которым живут `system_prompt.md`/
 /// `insights.md` — нужен и здесь (для `read_system_prompt`/`read_insights`),
-/// и вызывающему коду для `consolidation::spawn_daily_task`/`run`
-/// (`write_insights` пишет туда же).
+/// и `init_memory` (`PersonalityMemory::consolidate` пишет туда же).
 pub fn personality_storage(settings: &Settings) -> FileStorage {
     FileStorage::new(&settings.personality.path)
 }
