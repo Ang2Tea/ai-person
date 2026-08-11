@@ -1,12 +1,7 @@
 pub mod bot;
-pub mod buffer;
 pub mod chat_locks;
-pub mod commitments;
 pub mod consolidation;
 pub mod errors;
 pub mod idle_extraction;
-pub mod memory;
-pub mod proactive;
 pub mod scheduler;
-pub mod settings;
 pub mod tools;

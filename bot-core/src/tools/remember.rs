@@ -1,39 +1,21 @@
-use contracts::{Llm, Storage, Tool, ToolError, ToolSpec};
+use contracts::{Memory, Tool, ToolError, ToolSpec};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use crate::memory::{self, MemoryStore, NewFact, Visibility};
-use crate::settings::MemorySettings;
-
-pub struct Remember<L, B> {
-    llm: L,
-    memory: MemoryStore<B>,
-    settings: MemorySettings,
-    embedding_model: Arc<str>,
+pub struct Remember<M> {
+    memory: M,
 }
 
-impl<L, B> Remember<L, B> {
-    pub fn new(
-        llm: L,
-        memory: MemoryStore<B>,
-        settings: MemorySettings,
-        embedding_model: Arc<str>,
-    ) -> Self {
-        Self {
-            llm,
-            memory,
-            settings,
-            embedding_model,
-        }
+impl<M> Remember<M> {
+    pub fn new(memory: M) -> Self {
+        Self { memory }
     }
 }
 
-impl<L, B> Tool for Remember<L, B>
+impl<M> Tool for Remember<M>
 where
-    L: Llm + Clone + Send + Sync + 'static,
-    B: Storage + Clone + Send + Sync + 'static,
+    M: Memory + Clone + Send + Sync + 'static,
 {
     fn name(&self) -> &str {
         "remember"
@@ -82,10 +64,7 @@ where
         &self,
         args: Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
-        let llm = self.llm.clone();
         let memory = self.memory.clone();
-        let settings = self.settings.clone();
-        let embedding_model = self.embedding_model.clone();
 
         Box::pin(async move {
             let text = args
@@ -101,32 +80,16 @@ where
                 .get("confidence")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0) as f32;
-            let visibility = match args.get("visibility").and_then(Value::as_str) {
-                Some("public") => Visibility::Public,
-                _ => Visibility::Private,
-            };
-            let about_users = args
+            let visibility_public = matches!(args.get("visibility").and_then(Value::as_str), Some("public"));
+            let about_users: Vec<i64> = args
                 .get("about_users")
                 .and_then(Value::as_array)
                 .map(|items| items.iter().filter_map(Value::as_i64).collect())
                 .unwrap_or_default();
 
-            let fact = NewFact {
-                text,
-                confidence,
-                visibility,
-                about_users,
-                origin_chat_id: chat_id,
-            };
-            let saved = memory::save_fact(
-                &llm,
-                &memory,
-                fact,
-                settings.dedup_similarity_threshold,
-                &embedding_model,
-            )
-            .await
-            .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let saved = memory
+                .remember(chat_id, &text, confidence, visibility_public, &about_users)
+                .await;
 
             Ok(if saved {
                 "запомнено".to_owned()

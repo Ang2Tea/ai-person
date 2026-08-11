@@ -1,44 +1,27 @@
 mod get_current_datetime;
-mod list_known_chats;
-mod read_chat_history;
 mod remember;
 mod wait;
 
 pub use get_current_datetime::GetCurrentDatetime;
-pub use list_known_chats::ListKnownChats;
-pub use read_chat_history::ReadChatHistory;
 pub use remember::Remember;
 pub use wait::Wait;
 
-use contracts::{Llm, Storage, Tool, ToolCall, ToolSpec};
+use contracts::{Memory, Tool, ToolCall, ToolSpec};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::buffer::BufferStore;
-use crate::memory::MemoryStore;
-use crate::settings::MemorySettings;
-
-/// Channel-агностике инструменты — не зависят ни от какого конкретного
+/// Channel-агностичные инструменты — не зависят ни от какого конкретного
 /// канала связи, регистрируются вместе с инструментами, которые поставляет
 /// сам канал (например `channel_telegram_bot::tools`).
-pub fn tools<L, B>(
-    buffer: BufferStore<B>,
-    llm: L,
-    memory: MemoryStore<B>,
-    memory_settings: MemorySettings,
-    embedding_model: Arc<str>,
-) -> Vec<Arc<dyn Tool>>
+pub fn tools<M>(memory: M) -> Vec<Arc<dyn Tool>>
 where
-    L: Llm + Clone + Send + Sync + 'static,
-    B: Storage + Clone + Send + Sync + 'static,
+    M: Memory + Clone + Send + Sync + 'static,
 {
     vec![
         Arc::new(GetCurrentDatetime),
         Arc::new(Wait),
-        Arc::new(ListKnownChats::new(buffer.clone())),
-        Arc::new(ReadChatHistory::new(buffer)),
-        Arc::new(Remember::new(llm, memory, memory_settings, embedding_model)),
+        Arc::new(Remember::new(memory)),
     ]
 }
 
@@ -63,6 +46,10 @@ impl ToolRegistry {
 
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
+    }
+
+    pub fn ends_turn(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.ends_turn())
     }
 
     pub async fn dispatch(&self, call: &ToolCall) -> String {

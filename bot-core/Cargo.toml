@@ -6,14 +6,7 @@ edition.workspace = true
 [dependencies]
 chrono = { workspace = true }
 contracts = { workspace = true }
-rand = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-teloxide = "0.17.0"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-storage-fs = { workspace = true }

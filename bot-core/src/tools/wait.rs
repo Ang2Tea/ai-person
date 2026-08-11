@@ -29,4 +29,8 @@ impl Tool for Wait {
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move { Ok("ok, staying silent".to_owned()) })
     }
+
+    fn ends_turn(&self) -> bool {
+        true
+    }
 }
