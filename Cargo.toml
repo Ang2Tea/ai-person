@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "contracts",
     "bot-core",
+    "memory",
     "adapters/llm/*",
     "adapters/storages/*",
     "adapters/channels/*",
@@ -28,6 +29,7 @@ tracing = "0.1.44"
 # могли ссылаться друг на друга через `<crate> = { workspace = true }`.
 bot-core = { path = "bot-core" }
 contracts = { path = "contracts" }
+memory = { path = "memory" }
 llm-timeweb = { path = "adapters/llm/timeweb" }
 storage-fs = { path = "adapters/storages/fs" }
 channel-telegram-bot = { path = "adapters/channels/telegram-bot" }
