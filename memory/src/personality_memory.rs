@@ -71,6 +71,11 @@ where
     /// Пороги строже, чем были бы у ручного инструмента: срабатывает на
     /// каждое сообщение, значит должен быть придирчивее, чтобы не забивать
     /// контекст маловероятным. Любая ошибка — тихо `None`, не роняя ход.
+    ///
+    /// Поиск идёт по всему архиву без учёта `origin_chat_id`/`about_users` —
+    /// как в kuni, где diary — единое семантическое пространство поверх всех
+    /// чатов, а не изолированное по собеседнику. `chat_id`/`user_id` больше не
+    /// фильтруют результат, только маркируют вызов в логах.
     async fn retrieve_relevant_facts(&self, chat_id: i64, user_id: i64, query: &str) -> Option<String> {
         let query_embedding = self
             .llm
@@ -79,25 +84,15 @@ where
             .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: embedding failed"))
             .ok()?;
 
-        let own_prefix = format!("{chat_id}--");
-        let about_me_token = format!(",{user_id},");
         let records = self
             .store
-            .list_filtered(move |name| {
-                name.starts_with(&own_prefix)
-                    || name.contains("--public--")
-                    || name.contains(&about_me_token)
-            })
+            .list_all()
             .await
-            .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: listing records failed"))
+            .inspect_err(|err| tracing::debug!(chat_id, user_id, %err, "auto-retrieval: listing records failed"))
             .ok()?;
 
         let mut matches: Vec<(f32, MemoryRecord)> = Vec::new();
         for record in records {
-            if !is_visible(&record, chat_id, user_id) {
-                continue;
-            }
-
             let score = crate::similarity::cosine_similarity(&record.embedding, &query_embedding);
             if score >= self.settings.auto_retrieval_similarity_threshold {
                 matches.push((score, record));
@@ -230,13 +225,4 @@ where
         .await
         .map_err(|err| err.to_string())
     }
-}
-
-/// Запись видна из чата `chat_id` от лица пользователя `user_id`, если она
-/// публичная, либо возникла в этом же чате, либо лично про этого пользователя
-/// (даже если приватная и из другого чата).
-fn is_visible(record: &MemoryRecord, chat_id: i64, user_id: i64) -> bool {
-    record.visibility == Visibility::Public
-        || record.origin_chat_id == chat_id
-        || record.about_users.contains(&user_id)
 }
