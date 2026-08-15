@@ -98,10 +98,10 @@ where
     ) -> Vec<ChatMessage> {
         let mut system_prompt = self.memory.system_prompt().await;
 
-        if let Some(commitments) = self.memory.commitments(channel_chat_id(chat)).await
+        if let Some(commitments) = self.memory.commitments().await
             && !commitments.is_empty()
         {
-            system_prompt.push_str("\n\nОткрытые задачи/обещания в этом чате:\n");
+            system_prompt.push_str("\n\nОткрытые задачи/обещания:\n");
             system_prompt.push_str(&commitments);
         }
 

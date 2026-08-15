@@ -30,10 +30,11 @@ pub trait Memory: Send + Sync {
         query: &str,
     ) -> impl Future<Output = Option<String>> + Send;
 
-    /// Открытые задачи/обещания чата отдельно — нужны и без `query` (см.
-    /// проактивный ход, там `recall` не вызывается вовсе, но commitments в
-    /// system prompt всё равно должны попасть).
-    fn commitments(&self, chat_id: i64) -> impl Future<Output = Option<String>> + Send;
+    /// Открытые задачи/обещания — одним общим списком на всю личность, не по
+    /// чату (обещание из одного разговора должно быть видно и в другом).
+    /// Нужны и без `query` (см. проактивный ход, там `recall` не вызывается
+    /// вовсе, но commitments в system prompt всё равно должны попасть).
+    fn commitments(&self) -> impl Future<Output = Option<String>> + Send;
 
     /// Извлечь факты и обновить commitments по итогам хода — принимает уже
     /// готовый транскрипт (вызывающий достаёт его через `ChannelHistory`,

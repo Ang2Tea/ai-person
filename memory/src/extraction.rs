@@ -74,12 +74,12 @@ where
     L: Llm,
     S: Storage + Clone + Send + Sync + 'static,
 {
-    let existing_commitments = commitments.get(chat_id).await;
+    let existing_commitments = commitments.get().await;
     let commitments_context = existing_commitments.as_deref().unwrap_or("(пока пусто)");
     let messages = vec![
         ChatMessage::system(EXTRACTION_SYSTEM_PROMPT.trim()),
         ChatMessage::user(format!(
-            "Текущий список открытых задач/обещаний этого чата:\n{commitments_context}\n\n{transcript}\n\n{EXTRACTION_INSTRUCTION}"
+            "Текущий общий список открытых задач/обещаний (по всем чатам):\n{commitments_context}\n\n{transcript}\n\n{EXTRACTION_INSTRUCTION}"
         )),
     ];
 
@@ -108,7 +108,7 @@ where
         }
 
         if let Some(new_commitments) = new_commitments
-            && let Err(err) = commitments.set(chat_id, new_commitments).await
+            && let Err(err) = commitments.set(new_commitments).await
         {
             tracing::error!(chat_id, %err, "failed to save updated commitments");
         }

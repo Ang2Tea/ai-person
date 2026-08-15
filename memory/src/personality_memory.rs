@@ -150,8 +150,8 @@ where
         self.retrieve_relevant_facts(chat_id, user_id, query).await
     }
 
-    async fn commitments(&self, chat_id: i64) -> Option<String> {
-        self.commitments.get(chat_id).await
+    async fn commitments(&self) -> Option<String> {
+        self.commitments.get().await
     }
 
     async fn extract(&self, chat_id: i64, transcript: &str) {

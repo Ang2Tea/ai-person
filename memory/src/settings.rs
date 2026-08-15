@@ -9,7 +9,8 @@ pub struct PersonalityFiles {
     pub working_memory: String,
     pub diary_dir: String,
     pub insights: String,
-    pub commitments_dir: String,
+    /// Один общий файл на всю личность, не по чату — см. `CommitmentsStore`.
+    pub commitments: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

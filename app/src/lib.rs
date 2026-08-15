@@ -78,10 +78,10 @@ pub async fn init_memory(
         settings,
         &settings.personality.files.diary_dir,
     )));
-    let commitments = CommitmentsStore::new(FileStorage::new(&personality_subdir(
-        settings,
-        &settings.personality.files.commitments_dir,
-    )));
+    let commitments = CommitmentsStore::new(
+        personality_storage(settings),
+        settings.personality.files.commitments.clone(),
+    );
 
     let system_prompt = read_system_prompt(settings).await?;
     let initial_insights = read_insights(settings).await;
