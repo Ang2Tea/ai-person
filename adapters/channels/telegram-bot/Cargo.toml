@@ -7,7 +7,7 @@ edition.workspace = true
 contracts = { workspace = true }
 bot-core = { workspace = true }
 rand = { workspace = true }
-teloxide = "0.17.0"
+teloxide = { version = "0.17.0", default-features = false, features = ["rustls"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
