@@ -85,6 +85,14 @@ impl ChatBuffer {
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
+
+    /// Локальная имитация "непрочитанных": Bot API, в отличие от tdlib,
+    /// такого счётчика вообще не отдаёт (это состояние клиента, а не чата).
+    /// Приближаем его как число сообщений собеседника с момента последнего
+    /// собственного ответа бота в этом чате.
+    pub fn unread_count(&self) -> usize {
+        self.messages.iter().rev().take_while(|m| !m.is_bot).count()
+    }
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
@@ -230,5 +238,51 @@ where
             let last_activity = buffer.last_activity()?;
             Some((last_activity, buffer.message_count()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(is_bot: bool) -> BufferedMessage {
+        BufferedMessage {
+            telegram_message_id: 1,
+            sender_id: 1,
+            sender_name: "тест".to_owned(),
+            text: "привет".to_owned(),
+            timestamp: Utc::now(),
+            is_bot,
+        }
+    }
+
+    #[test]
+    fn unread_count_counts_messages_since_last_bot_reply() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(true));
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+
+        assert_eq!(buffer.unread_count(), 2);
+    }
+
+    #[test]
+    fn unread_count_is_zero_right_after_bot_reply() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(true));
+
+        assert_eq!(buffer.unread_count(), 0);
+    }
+
+    #[test]
+    fn unread_count_counts_everything_if_bot_never_replied() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+
+        assert_eq!(buffer.unread_count(), 3);
     }
 }
