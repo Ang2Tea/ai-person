@@ -53,7 +53,7 @@ where
     /// извлечение памяти. Channel-агностично: не отправляет ответ сам,
     /// только возвращает решённый моделью текст — отправка (и запись
     /// исходящего в историю канала) остаётся заботой вызывающего.
-    #[tracing::instrument(skip(self, query), fields(chat_id = %chat.id, user_id = %user.id))]
+    #[tracing::instrument(skip(self, chat, user, query), fields(chat_id = %chat.id, user_id = %user.id))]
     pub async fn run_turn(
         &self,
         chat: ChannelId,
@@ -75,7 +75,7 @@ where
     /// записывается в историю — это не реальное событие), и при исчерпании
     /// итераций без решения ответ не форсируется — промолчать тут нормальный
     /// исход, а не невежливость.
-    #[tracing::instrument(skip(self), fields(chat_id = %chat.id))]
+    #[tracing::instrument(skip(self, chat), fields(chat_id = %chat.id))]
     pub async fn run_proactive(&self, chat: ChannelId) -> Result<Option<String>, AppError> {
         let _chat_guard = self.chat_locks.lock(&chat).await;
 
@@ -131,7 +131,7 @@ where
     /// `force_final_answer: false`, просто исчерпала итерации без решения) и
     /// `Usage` последнего вызова (нужна вызывающему для решения о фоновом
     /// извлечении памяти).
-    #[tracing::instrument(skip(self, messages), fields(chat_id = %chat.id))]
+    #[tracing::instrument(skip(self, chat, messages), fields(chat_id = %chat.id))]
     async fn run_tool_loop(
         &self,
         chat: &ChannelId,

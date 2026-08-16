@@ -52,7 +52,7 @@ impl ToolRegistry {
         self.tools.get(name).is_some_and(|t| t.ends_turn())
     }
 
-    #[tracing::instrument(skip(self, call), fields(tool = %call.name))]
+    #[tracing::instrument(level = "debug", skip(self, call), fields(tool = %call.name))]
     pub async fn dispatch(&self, call: &ToolCall) -> String {
         let Some(tool) = self.tools.get(&call.name) else {
             tracing::error!("unknown tool requested by model");

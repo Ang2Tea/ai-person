@@ -37,7 +37,7 @@ impl TimewebClient {
 }
 
 impl Llm for TimewebClient {
-    #[tracing::instrument(skip(self, messages, tools), fields(model = %model, messages = messages.len(), tools = tools.len()))]
+    #[tracing::instrument(level = "debug", skip(self, messages, tools), fields(model = %model, messages = messages.len(), tools = tools.len()))]
     async fn chat(
         &self,
         model: &str,
@@ -94,7 +94,7 @@ impl Llm for TimewebClient {
             .ok_or(LlmError::EmptyResponse)
     }
 
-    #[tracing::instrument(skip(self, input), fields(model = %model, input_len = input.len()))]
+    #[tracing::instrument(level = "debug", skip(self, input), fields(model = %model, input_len = input.len()))]
     async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, LlmError> {
         let req = EmbeddingRequest { model, input };
 
