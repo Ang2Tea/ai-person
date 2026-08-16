@@ -3,7 +3,7 @@ mod models;
 mod timeweb_models;
 mod wire;
 
-use contracts::{ChatCompletion, ChatMessage, Llm, LlmError, ToolCall, ToolSpec, Usage};
+use contracts::{ChatCompletion, ChatMessage, Llm, LlmError, LlmRole, ToolCall, ToolSpec, Usage};
 
 use crate::{
     embedding_models::{EmbeddingRequest, EmbeddingResponse},
@@ -17,12 +17,18 @@ pub struct TimewebClient {
     http: reqwest::Client,
     api_key: String,
     endpoint: String,
+    primary_model: String,
+    embedding_model: String,
 }
 
 const TEMPERATURE: f32 = 0.7;
 
 impl TimewebClient {
-    pub fn try_new(api_key: impl Into<String>) -> Result<Self, LlmError> {
+    pub fn try_new(
+        api_key: impl Into<String>,
+        primary_model: impl Into<String>,
+        embedding_model: impl Into<String>,
+    ) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
@@ -32,20 +38,32 @@ impl TimewebClient {
             http,
             api_key: api_key.into(),
             endpoint: "https://api.timeweb.ai/v1".to_string(),
+            primary_model: primary_model.into(),
+            embedding_model: embedding_model.into(),
         })
+    }
+
+    /// Единственное место, где `LlmRole` превращается в конкретную строку
+    /// модели — привязка задаётся один раз в `try_new` (из конфига), вызовы
+    /// `chat`/`embed` выбирают только роль.
+    fn model_for(&self, role: LlmRole) -> &str {
+        match role {
+            LlmRole::Primary => &self.primary_model,
+            LlmRole::Embedding => &self.embedding_model,
+        }
     }
 }
 
 impl Llm for TimewebClient {
-    #[tracing::instrument(level = "debug", skip(self, messages, tools), fields(model = %model, messages = messages.len(), tools = tools.len()))]
+    #[tracing::instrument(level = "debug", skip(self, messages, tools), fields(?role, messages = messages.len(), tools = tools.len()))]
     async fn chat(
         &self,
-        model: &str,
+        role: LlmRole,
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<ChatCompletion, LlmError> {
         let req = ChatRequest {
-            model,
+            model: self.model_for(role),
             messages: messages.iter().map(WireMessage::from).collect(),
             tools: tools.iter().map(WireToolSpec::from).collect(),
             temperature: TEMPERATURE,
@@ -94,9 +112,12 @@ impl Llm for TimewebClient {
             .ok_or(LlmError::EmptyResponse)
     }
 
-    #[tracing::instrument(level = "debug", skip(self, input), fields(model = %model, input_len = input.len()))]
-    async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, LlmError> {
-        let req = EmbeddingRequest { model, input };
+    #[tracing::instrument(level = "debug", skip(self, input), fields(?role, input_len = input.len()))]
+    async fn embed(&self, role: LlmRole, input: &str) -> Result<Vec<f32>, LlmError> {
+        let req = EmbeddingRequest {
+            model: self.model_for(role),
+            input,
+        };
 
         let resp = self
             .http

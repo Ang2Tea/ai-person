@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::env;
 
 use app::{init_history, init_llm, init_memory, init_tracing, load_settings};
 use bot_core::{bot::ChatBot, consolidation::ConsolidationJob, idle_extraction::IdleExtractionJob};
@@ -33,12 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bot: Bot = Bot::new(bot_token);
     let bot_user_id = bot.get_me().await?.id.0 as i64;
 
-    let timeweb_client = init_llm()?;
+    let timeweb_client = init_llm(&settings)?;
     let history = init_history(&settings).await?;
     let memory = init_memory(&settings, timeweb_client.clone()).await?;
     let history_dyn = channel_telegram_bot::channel_history(history.clone());
-
-    let model: Arc<str> = settings.llm.model.clone().into();
 
     let mut tools = bot_core::tools::tools(memory.clone());
     tools.extend(channel_telegram_bot::tools(
@@ -51,7 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         history_dyn.clone(),
         memory.clone(),
         timeweb_client,
-        model,
         settings.memory.token_threshold,
         tools,
     );

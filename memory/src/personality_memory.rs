@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
-use contracts::{Llm, Storage};
+use contracts::{Llm, LlmRole, Storage};
 
 use crate::commitments::CommitmentsStore;
 use crate::consolidation::{self, SharedInsights};
@@ -23,8 +23,6 @@ pub struct PersonalityMemory<L, S> {
     commitments: CommitmentsStore<S>,
     insights: SharedInsights,
     system_prompt: Arc<str>,
-    model: Arc<str>,
-    embedding_model: Arc<str>,
     settings: MemorySettings,
     personality_storage: S,
     system_prompt_key: Arc<str>,
@@ -43,8 +41,6 @@ where
         commitments: CommitmentsStore<S>,
         insights: SharedInsights,
         system_prompt: impl Into<Arc<str>>,
-        model: impl Into<Arc<str>>,
-        embedding_model: impl Into<Arc<str>>,
         settings: MemorySettings,
         personality_storage: S,
         system_prompt_key: impl Into<Arc<str>>,
@@ -56,8 +52,6 @@ where
             commitments,
             insights,
             system_prompt: system_prompt.into(),
-            model: model.into(),
-            embedding_model: embedding_model.into(),
             settings,
             personality_storage,
             system_prompt_key: system_prompt_key.into(),
@@ -80,7 +74,7 @@ where
     async fn retrieve_relevant_facts(&self, chat_id: i64, user_id: i64, query: &str) -> Option<String> {
         let query_embedding = self
             .llm
-            .embed(&self.embedding_model, query)
+            .embed(LlmRole::Embedding, query)
             .await
             .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: embedding failed"))
             .ok()?;
@@ -165,8 +159,6 @@ where
             transcript,
             self.settings.dedup_similarity_threshold,
             self.settings.min_fact_length,
-            &self.model,
-            &self.embedding_model,
         )
         .await
         {
@@ -200,7 +192,6 @@ where
             &self.store,
             fact,
             self.settings.dedup_similarity_threshold,
-            &self.embedding_model,
         )
         .await
         {
@@ -217,8 +208,6 @@ where
         consolidation::run(
             &self.llm,
             &self.store,
-            &self.model,
-            &self.embedding_model,
             self.settings.dedup_similarity_threshold,
             self.settings.stale_after_days,
             &self.personality_storage,

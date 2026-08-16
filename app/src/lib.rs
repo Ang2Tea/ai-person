@@ -51,9 +51,13 @@ pub fn init_tracing() {
         .init();
 }
 
-pub fn init_llm() -> Result<TimewebClient, Box<dyn std::error::Error>> {
+pub fn init_llm(settings: &Settings) -> Result<TimewebClient, Box<dyn std::error::Error>> {
     let timeweb_token = env::var("TIMEWEB_KEY")?;
-    Ok(TimewebClient::try_new(&timeweb_token)?)
+    Ok(TimewebClient::try_new(
+        &timeweb_token,
+        settings.llm.model.clone(),
+        settings.llm.embedding_model.clone(),
+    )?)
 }
 
 /// `personality.path` + подпапка — `PersonalitySettings` больше не даёт таких
@@ -100,8 +104,6 @@ pub async fn init_memory(
         commitments,
         insights,
         system_prompt,
-        settings.llm.model.clone(),
-        settings.llm.embedding_model.clone(),
         settings.memory.clone(),
         personality_storage(settings),
         settings.personality.files.system_prompt.clone(),

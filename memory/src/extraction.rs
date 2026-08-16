@@ -1,4 +1,4 @@
-use contracts::{ChatMessage, Llm, Storage};
+use contracts::{ChatMessage, Llm, LlmRole, Storage};
 
 use crate::commitments::CommitmentsStore;
 use crate::errors::MemoryError;
@@ -58,7 +58,6 @@ fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
 /// прошло дедуп. Обрезка истории канала до `keep_last_messages` — забота
 /// вызывающего (`ChatBot`/воркер извлечения по простою), сама функция о
 /// канале ничего не знает.
-#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(llm, memory, commitments, transcript), fields(transcript_len = transcript.len()))]
 pub async fn maybe_extract<L, S>(
     llm: &L,
@@ -68,8 +67,6 @@ pub async fn maybe_extract<L, S>(
     transcript: &str,
     dedup_similarity_threshold: f32,
     min_fact_length: usize,
-    model: &str,
-    embedding_model: &str,
 ) -> Result<(), MemoryError>
 where
     L: Llm,
@@ -84,7 +81,7 @@ where
         )),
     ];
 
-    let completion = llm.chat(model, &messages, &[]).await?;
+    let completion = llm.chat(LlmRole::Primary, &messages, &[]).await?;
 
     if let Some(content) = completion.message.content {
         // Сначала отделяем блок задач от фактов — если резать сразу по
@@ -101,9 +98,7 @@ where
                 continue;
             }
 
-            if let Err(err) =
-                save_fact(llm, memory, fact, dedup_similarity_threshold, embedding_model).await
-            {
+            if let Err(err) = save_fact(llm, memory, fact, dedup_similarity_threshold).await {
                 tracing::error!(%err, "failed to save extracted fact");
             }
         }

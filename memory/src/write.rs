@@ -1,4 +1,4 @@
-use contracts::{Llm, Storage};
+use contracts::{Llm, LlmRole, Storage};
 
 use crate::errors::MemoryError;
 use crate::record::{MemoryRecord, NewFact};
@@ -15,13 +15,12 @@ pub async fn save_fact<L, S>(
     memory: &MemoryStore<S>,
     fact: NewFact,
     dedup_threshold: f32,
-    embedding_model: &str,
 ) -> Result<bool, MemoryError>
 where
     L: Llm,
     S: Storage + Clone + Send + Sync + 'static,
 {
-    let embedding = llm.embed(embedding_model, &fact.text).await?;
+    let embedding = llm.embed(LlmRole::Embedding, &fact.text).await?;
 
     let origin_prefix = format!("{}--", fact.origin_chat_id);
     let existing = memory

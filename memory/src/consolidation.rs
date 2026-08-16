@@ -4,7 +4,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use contracts::{ChatMessage, Llm, Storage};
+use contracts::{ChatMessage, Llm, LlmRole, Storage};
 
 use crate::errors::ConsolidationError;
 use crate::record::{MemoryRecord, Visibility};
@@ -29,8 +29,6 @@ pub type SharedInsights = Arc<RwLock<Arc<str>>>;
 pub async fn run<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,
-    model: &str,
-    embedding_model: &str,
     dedup_similarity_threshold: f32,
     stale_after_days: i64,
     personality_storage: &S,
@@ -45,19 +43,11 @@ where
     let records = memory.list_all().await?;
     tracing::debug!(count = records.len(), "consolidation: loaded records");
 
-    merge_similar(
-        llm,
-        memory,
-        model,
-        embedding_model,
-        dedup_similarity_threshold,
-        records,
-    )
-    .await?;
+    merge_similar(llm, memory, dedup_similarity_threshold, records).await?;
 
     let remaining = memory.list_all().await?;
     let system_prompt = read_system_prompt(personality_storage, system_prompt_key).await?;
-    prune_irrelevant(llm, memory, model, &system_prompt, &remaining).await?;
+    prune_irrelevant(llm, memory, &system_prompt, &remaining).await?;
     remove_stale(memory, stale_after_days, &remaining).await?;
 
     let public_records: Vec<MemoryRecord> = memory
@@ -72,7 +62,7 @@ where
         return Ok(());
     }
 
-    let generated = generate_insights(llm, model, public_records).await?;
+    let generated = generate_insights(llm, public_records).await?;
     write_insights(personality_storage, insights_key, &generated).await?;
     *insights.write().await = generated.into();
 
@@ -107,8 +97,6 @@ fn group_key(record: &MemoryRecord) -> GroupKey {
 async fn merge_similar<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,
-    model: &str,
-    embedding_model: &str,
     similarity_threshold: f32,
     records: Vec<MemoryRecord>,
 ) -> Result<(), ConsolidationError>
@@ -126,7 +114,7 @@ where
             if cluster.len() < 2 {
                 continue;
             }
-            if let Err(err) = merge_cluster(llm, memory, model, embedding_model, cluster).await {
+            if let Err(err) = merge_cluster(llm, memory, cluster).await {
                 tracing::warn!(%err, "consolidation: failed to merge a cluster of similar facts");
             }
         }
@@ -172,8 +160,6 @@ fn cluster_by_similarity(mut records: Vec<MemoryRecord>, threshold: f32) -> Vec<
 async fn merge_cluster<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,
-    model: &str,
-    embedding_model: &str,
     cluster: Vec<MemoryRecord>,
 ) -> Result<(), ConsolidationError>
 where
@@ -192,7 +178,7 @@ where
         ChatMessage::user(joined),
     ];
 
-    let completion = llm.chat(model, &messages, &[]).await?;
+    let completion = llm.chat(LlmRole::Primary, &messages, &[]).await?;
 
     let Some(merged_text) = completion
         .message
@@ -204,7 +190,7 @@ where
         return Ok(());
     };
 
-    let embedding = llm.embed(embedding_model, &merged_text).await?;
+    let embedding = llm.embed(LlmRole::Embedding, &merged_text).await?;
 
     let first = &cluster[0];
     let avg_confidence =
@@ -262,7 +248,6 @@ where
 async fn prune_irrelevant<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,
-    model: &str,
     system_prompt: &str,
     records: &[MemoryRecord],
 ) -> Result<(), ConsolidationError>
@@ -288,7 +273,7 @@ where
         )),
     ];
 
-    let completion = llm.chat(model, &messages, &[]).await?;
+    let completion = llm.chat(LlmRole::Primary, &messages, &[]).await?;
     let response = completion.message.content.unwrap_or_default();
     let discard = parse_discard_indices(&response);
 
@@ -355,7 +340,6 @@ where
 
 async fn generate_insights<L>(
     llm: &L,
-    model: &str,
     public_records: Vec<MemoryRecord>,
 ) -> Result<String, ConsolidationError>
 where
@@ -372,7 +356,7 @@ where
         ChatMessage::user(facts),
     ];
 
-    let completion = llm.chat(model, &messages, &[]).await?;
+    let completion = llm.chat(LlmRole::Primary, &messages, &[]).await?;
     Ok(completion.message.content.unwrap_or_default().trim().to_owned())
 }
 

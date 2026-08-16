@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let settings = load_settings()?;
 
-    let llm = init_llm()?;
+    let llm = init_llm(&settings)?;
     let history = init_history(&settings).await?;
     let memory = init_memory(&settings, llm).await?;
 

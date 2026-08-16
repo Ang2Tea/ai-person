@@ -13,7 +13,7 @@ pub use background_job::BackgroundJob;
 pub use channel_history::{Activity, ChannelHistory, ChannelId};
 pub use completion::{ChatCompletion, Usage};
 pub use errors::{LlmError, StorageError, ToolError};
-pub use llm::Llm;
+pub use llm::{Llm, LlmRole};
 pub use memory::Memory;
 pub use message::ChatMessage;
 pub use storage::Storage;

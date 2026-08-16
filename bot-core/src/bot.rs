@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use contracts::{ChannelHistory, ChannelId, ChatMessage, Llm, Memory, Tool, Usage};
+use contracts::{ChannelHistory, ChannelId, ChatMessage, Llm, LlmRole, Memory, Tool, Usage};
 use tracing::Instrument;
 
 use crate::{chat_locks::ChatLocks, errors::AppError, tools::ToolRegistry};
@@ -13,7 +13,6 @@ pub struct ChatBot<L, M> {
     history: Arc<dyn ChannelHistory>,
     memory: M,
     llm: L,
-    model: Arc<str>,
     token_threshold: u32,
     tools: Arc<ToolRegistry>,
     chat_locks: ChatLocks,
@@ -29,7 +28,6 @@ where
         history: Arc<dyn ChannelHistory>,
         memory: M,
         llm: L,
-        model: impl Into<Arc<str>>,
         token_threshold: u32,
         tools: Vec<Arc<dyn Tool>>,
     ) -> Self {
@@ -42,7 +40,6 @@ where
             history,
             memory,
             llm,
-            model: model.into(),
             token_threshold,
             tools: Arc::new(registry),
             chat_locks: ChatLocks::new(),
@@ -144,7 +141,7 @@ where
         for i in 0..MAX_TOOL_ITERATIONS {
             let completion = self
                 .llm
-                .chat(&self.model, &messages, &self.tools.specs())
+                .chat(LlmRole::Primary, &messages, &self.tools.specs())
                 .await?;
             let reply = completion.message;
             last_usage = completion.usage;
@@ -175,7 +172,7 @@ where
 
         if final_reply.is_none() && force_final_answer {
             tracing::warn!("hit max tool iterations, forcing a final text answer without tools");
-            let completion = self.llm.chat(&self.model, &messages, &[]).await?;
+            let completion = self.llm.chat(LlmRole::Primary, &messages, &[]).await?;
             last_usage = completion.usage;
             final_reply = Some(completion.message);
         }
