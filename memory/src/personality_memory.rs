@@ -135,7 +135,7 @@ where
 
         let insights = self.insights.read().await.clone();
         if !insights.is_empty() {
-            prompt.push_str("\n\n");
+            prompt.push_str("\n\nЗаметки о собеседниках (не про тебя самого):\n");
             prompt.push_str(&insights);
         }
 
