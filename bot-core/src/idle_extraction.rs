@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use tracing::Instrument;
 
 use contracts::{Activity, BackgroundJob, ChannelHistory, ChannelId, Memory};
 
@@ -65,12 +66,17 @@ where
                         continue;
                     }
 
-                    tracing::info!(chat_id = %chat.id, "idle extraction: chat quiet for a while, extracting");
-                    let transcript = history.transcript(&chat).await;
-                    memory.extract(channel_chat_id(&chat), &transcript).await;
-                    history
-                        .truncate_keep_last(&chat, memory.keep_last_messages())
-                        .await;
+                    let chat_id = chat.id.clone();
+                    async {
+                        tracing::info!("idle extraction: chat quiet for a while, extracting");
+                        let transcript = history.transcript(&chat).await;
+                        memory.extract(channel_chat_id(&chat), &transcript).await;
+                        history
+                            .truncate_keep_last(&chat, memory.keep_last_messages())
+                            .await;
+                    }
+                    .instrument(tracing::info_span!("idle_extraction_job", chat_id))
+                    .await;
                 }
             }
         });

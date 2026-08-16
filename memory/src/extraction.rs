@@ -59,6 +59,7 @@ fn parse_chunk(chunk: &str, origin_chat_id: i64) -> NewFact {
 /// вызывающего (`ChatBot`/воркер извлечения по простою), сама функция о
 /// канале ничего не знает.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(llm, memory, commitments, transcript), fields(transcript_len = transcript.len()))]
 pub async fn maybe_extract<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,
@@ -103,14 +104,14 @@ where
             if let Err(err) =
                 save_fact(llm, memory, fact, dedup_similarity_threshold, embedding_model).await
             {
-                tracing::error!(chat_id, %err, "failed to save extracted fact");
+                tracing::error!(%err, "failed to save extracted fact");
             }
         }
 
         if let Some(new_commitments) = new_commitments
             && let Err(err) = commitments.set(new_commitments).await
         {
-            tracing::error!(chat_id, %err, "failed to save updated commitments");
+            tracing::error!(%err, "failed to save updated commitments");
         }
     }
 

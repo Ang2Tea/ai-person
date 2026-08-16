@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use contracts::{ChannelHistory, ChannelId, ChatMessage, Llm, Memory, Tool, Usage};
+use tracing::Instrument;
 
 use crate::{chat_locks::ChatLocks, errors::AppError, tools::ToolRegistry};
 
@@ -52,6 +53,7 @@ where
     /// извлечение памяти. Channel-агностично: не отправляет ответ сам,
     /// только возвращает решённый моделью текст — отправка (и запись
     /// исходящего в историю канала) остаётся заботой вызывающего.
+    #[tracing::instrument(skip(self, query), fields(chat_id = %chat.id, user_id = %user.id))]
     pub async fn run_turn(
         &self,
         chat: ChannelId,
@@ -73,6 +75,7 @@ where
     /// записывается в историю — это не реальное событие), и при исчерпании
     /// итераций без решения ответ не форсируется — промолчать тут нормальный
     /// исход, а не невежливость.
+    #[tracing::instrument(skip(self), fields(chat_id = %chat.id))]
     pub async fn run_proactive(&self, chat: ChannelId) -> Result<Option<String>, AppError> {
         let _chat_guard = self.chat_locks.lock(&chat).await;
 
@@ -128,6 +131,7 @@ where
     /// `force_final_answer: false`, просто исчерпала итерации без решения) и
     /// `Usage` последнего вызова (нужна вызывающему для решения о фоновом
     /// извлечении памяти).
+    #[tracing::instrument(skip(self, messages), fields(chat_id = %chat.id))]
     async fn run_tool_loop(
         &self,
         chat: &ChannelId,
@@ -147,13 +151,13 @@ where
             let calls = reply.tool_calls.clone().unwrap_or_default();
 
             if calls.is_empty() {
-                tracing::debug!(chat_id = %chat.id, iteration = i, "model requested no tools");
+                tracing::debug!(iteration = i, "model requested no tools");
                 final_reply = Some(reply);
                 break;
             }
 
             let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-            tracing::debug!(chat_id = %chat.id, iteration = i, tools = ?names, "model requested tool calls");
+            tracing::debug!(iteration = i, tools = ?names, "model requested tool calls");
 
             messages.push(reply);
             let mut ended_turn = false;
@@ -164,16 +168,13 @@ where
             }
 
             if ended_turn {
-                tracing::debug!(chat_id = %chat.id, iteration = i, "a tool ended the turn silently");
+                tracing::debug!(iteration = i, "a tool ended the turn silently");
                 return Ok((None, last_usage));
             }
         }
 
         if final_reply.is_none() && force_final_answer {
-            tracing::warn!(
-                chat_id = %chat.id,
-                "hit max tool iterations, forcing a final text answer without tools"
-            );
+            tracing::warn!("hit max tool iterations, forcing a final text answer without tools");
             let completion = self.llm.chat(&self.model, &messages, &[]).await?;
             last_usage = completion.usage;
             final_reply = Some(completion.message);
@@ -195,13 +196,21 @@ where
         let memory = self.memory.clone();
         let chat = chat.clone();
 
-        tokio::spawn(async move {
-            let transcript = history.transcript(&chat).await;
-            memory.extract(channel_chat_id(&chat), &transcript).await;
-            history
-                .truncate_keep_last(&chat, memory.keep_last_messages())
-                .await;
-        });
+        // `tokio::spawn` не наследует текущий span автоматически (задача
+        // может быть опрошена на другом потоке) — оборачиваем явно, иначе
+        // это фоновое извлечение выпадает из трассировки хода, который его
+        // запустил.
+        let span = tracing::info_span!("background_extraction", chat_id = %chat.id);
+        tokio::spawn(
+            async move {
+                let transcript = history.transcript(&chat).await;
+                memory.extract(channel_chat_id(&chat), &transcript).await;
+                history
+                    .truncate_keep_last(&chat, memory.keep_last_messages())
+                    .await;
+            }
+            .instrument(span),
+        );
     }
 }
 

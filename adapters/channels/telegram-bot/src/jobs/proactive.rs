@@ -3,6 +3,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rand::RngExt;
 use teloxide::{Bot, types::ChatId};
+use tracing::Instrument;
 
 use bot_core::bot::ChatBot;
 use contracts::{BackgroundJob, ChannelId, Llm, Memory, Storage};
@@ -77,28 +78,37 @@ where
                     continue;
                 };
 
-                tracing::info!(chat_id, "proactive: giving the model a chance to write first");
-                let chat = ChannelId {
-                    channel: TELEGRAM_CHANNEL,
-                    id: chat_id.to_string(),
-                };
+                async {
+                    tracing::info!("proactive: giving the model a chance to write first");
+                    let chat = ChannelId {
+                        channel: TELEGRAM_CHANNEL,
+                        id: chat_id.to_string(),
+                    };
 
-                match chat_bot.run_proactive(chat).await {
-                    Ok(Some(text)) => {
-                        if let Err(err) =
-                            dispatch::send_and_record(&bot, bot_user_id, &history, ChatId(chat_id), text)
-                                .await
-                        {
-                            tracing::error!(chat_id, %err, "proactive: failed to send message");
+                    match chat_bot.run_proactive(chat).await {
+                        Ok(Some(text)) => {
+                            if let Err(err) = dispatch::send_and_record(
+                                &bot,
+                                bot_user_id,
+                                &history,
+                                ChatId(chat_id),
+                                text,
+                            )
+                            .await
+                            {
+                                tracing::error!(%err, "proactive: failed to send message");
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!("proactive: model chose not to write");
+                        }
+                        Err(err) => {
+                            tracing::error!(%err, "proactive turn failed");
                         }
                     }
-                    Ok(None) => {
-                        tracing::debug!(chat_id, "proactive: model chose not to write");
-                    }
-                    Err(err) => {
-                        tracing::error!(chat_id, %err, "proactive turn failed");
-                    }
                 }
+                .instrument(tracing::info_span!("proactive_job", chat_id))
+                .await;
             }
         });
     }

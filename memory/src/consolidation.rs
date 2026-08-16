@@ -25,6 +25,7 @@ pub type SharedInsights = Arc<RwLock<Arc<str>>>;
 /// не `MemorySettings`/`PersonalitySettings` целиком — так функцию проще
 /// тестировать и переиспользовать, не таща формат конфига внутрь.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all)]
 pub async fn run<L, S>(
     llm: &L,
     memory: &MemoryStore<S>,

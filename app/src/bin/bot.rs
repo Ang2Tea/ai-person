@@ -11,6 +11,7 @@ use teloxide::{
     types::AllowedUpdate,
     update_listeners::{AsUpdateStream, Polling},
 };
+use tracing::Instrument;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -102,13 +103,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let bot = bot.clone();
                 let chat_bot = chat_bot.clone();
                 let history = history.clone();
-                tokio::spawn(async move {
-                    if let Err(err) =
-                        dispatch::handle_update(&bot, bot_user_id, &chat_bot, &history, update.kind).await
-                    {
-                        tracing::error!(%err, "Error handling update");
+                let update_id = update.id.0;
+                tokio::spawn(
+                    async move {
+                        if let Err(err) = dispatch::handle_update(
+                            &bot,
+                            bot_user_id,
+                            &chat_bot,
+                            &history,
+                            update.kind,
+                        )
+                        .await
+                        {
+                            tracing::error!(%err, "Error handling update");
+                        }
                     }
-                });
+                    .instrument(tracing::info_span!("update", update_id)),
+                );
             }
             _ = &mut ctrl_c => {
                 tracing::info!("Ctrl+C received, shutting down");

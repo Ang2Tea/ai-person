@@ -41,6 +41,7 @@ where
     }
 }
 
+#[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_message<L, M, S>(
     bot: &Bot,
     bot_user_id: i64,
@@ -57,6 +58,7 @@ where
         tracing::error!("Can`t get chat id");
         return Ok(());
     };
+    tracing::Span::current().record("chat_id", chat_id.0);
 
     let Some(text) = describe_message(&msg) else {
         tracing::debug!("Skipping message without representable content");
@@ -67,6 +69,7 @@ where
         tracing::error!("Can`t get message sender");
         return Ok(());
     };
+    tracing::Span::current().record("user_id", from.id.0);
 
     let incoming = BufferedMessage {
         telegram_message_id: msg.id.0,
@@ -84,6 +87,7 @@ where
 /// Правки в Telegram применяются только к тексту/подписи — dice, стикер,
 /// опрос и т.п. отредактировать в другой тип контента нельзя, поэтому здесь
 /// достаточно текста/подписи, в отличие от `describe_message`.
+#[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_edited_message<L, M, S>(
     bot: &Bot,
     bot_user_id: i64,
@@ -100,6 +104,7 @@ where
         tracing::error!("Can`t get chat id for edited message");
         return Ok(());
     };
+    tracing::Span::current().record("chat_id", chat_id.0);
 
     let Some(new_text) = msg.text().or_else(|| msg.caption()) else {
         tracing::debug!("Skipping edited message without text/caption");
@@ -110,6 +115,7 @@ where
         tracing::error!("Can`t get edited message sender");
         return Ok(());
     };
+    tracing::Span::current().record("user_id", from.id.0);
 
     let text = format!(
         "{} отредактировал(а) сообщение #{}, теперь: {}",
@@ -129,6 +135,7 @@ where
     run_and_reply(bot, bot_user_id, chat_bot, history, chat_id, from.id.0 as i64, &text).await
 }
 
+#[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_reaction<L, M, S>(
     bot: &Bot,
     bot_user_id: i64,
@@ -145,6 +152,7 @@ where
         tracing::debug!("Skipping reaction from an anonymous/channel actor");
         return Ok(());
     };
+    tracing::Span::current().record("user_id", user.id.0);
 
     if user.id.0 as i64 == bot_user_id {
         // Не реагируем на собственные же реакции — иначе потенциальный цикл.
@@ -157,6 +165,7 @@ where
     }
 
     let chat_id = reaction.chat.id;
+    tracing::Span::current().record("chat_id", chat_id.0);
     let emoji = describe_reactions(&reaction.new_reaction);
     let text = format!(
         "{} поставил(а) реакцию {} на сообщение #{}",

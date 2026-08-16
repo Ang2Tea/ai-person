@@ -41,7 +41,14 @@ pub fn load_settings() -> Result<Settings, config::ConfigError> {
 pub fn init_tracing() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        // Логирует закрытие каждого span'а (`#[instrument]` и явные
+        // `info_span!`) с `time.busy`/`time.idle` — без этого спаны дают
+        // только корреляцию полей во вложенных событиях, но не видно, сколько
+        // реально занял ход, вызов LLM или фоновая задача.
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .init();
 }
 
 pub fn init_llm() -> Result<TimewebClient, Box<dyn std::error::Error>> {

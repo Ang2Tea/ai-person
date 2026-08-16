@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use chrono::Local;
+use tracing::Instrument;
 
 use contracts::{BackgroundJob, Memory};
 
@@ -33,10 +34,14 @@ where
             loop {
                 tokio::time::sleep(duration_until_next_run(CONSOLIDATION_HOUR_LOCAL)).await;
 
-                tracing::info!("starting nightly memory consolidation");
-                if let Err(err) = self.memory.consolidate().await {
-                    tracing::error!(%err, "nightly memory consolidation failed");
+                async {
+                    tracing::info!("starting nightly memory consolidation");
+                    if let Err(err) = self.memory.consolidate().await {
+                        tracing::error!(%err, "nightly memory consolidation failed");
+                    }
                 }
+                .instrument(tracing::info_span!("consolidation_job"))
+                .await;
             }
         });
     }

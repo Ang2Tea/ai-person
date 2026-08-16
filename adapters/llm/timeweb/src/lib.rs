@@ -37,6 +37,7 @@ impl TimewebClient {
 }
 
 impl Llm for TimewebClient {
+    #[tracing::instrument(skip(self, messages, tools), fields(model = %model, messages = messages.len(), tools = tools.len()))]
     async fn chat(
         &self,
         model: &str,
@@ -69,6 +70,11 @@ impl Llm for TimewebClient {
             completion_tokens: resp.usage.completion_tokens,
             total_tokens: resp.usage.total_tokens,
         };
+        tracing::debug!(
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            "chat completion received"
+        );
 
         resp.choices
             .into_iter()
@@ -88,6 +94,7 @@ impl Llm for TimewebClient {
             .ok_or(LlmError::EmptyResponse)
     }
 
+    #[tracing::instrument(skip(self, input), fields(model = %model, input_len = input.len()))]
     async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, LlmError> {
         let req = EmbeddingRequest { model, input };
 

@@ -76,6 +76,7 @@ where
     /// как в kuni, где diary — единое семантическое пространство поверх всех
     /// чатов, а не изолированное по собеседнику. `chat_id`/`user_id` больше не
     /// фильтруют результат, только маркируют вызов в логах.
+    #[tracing::instrument(skip(self, query))]
     async fn retrieve_relevant_facts(&self, chat_id: i64, user_id: i64, query: &str) -> Option<String> {
         let query_embedding = self
             .llm
@@ -88,7 +89,7 @@ where
             .store
             .list_all()
             .await
-            .inspect_err(|err| tracing::debug!(chat_id, user_id, %err, "auto-retrieval: listing records failed"))
+            .inspect_err(|err| tracing::debug!(%err, "auto-retrieval: listing records failed"))
             .ok()?;
 
         let mut matches: Vec<(f32, MemoryRecord)> = Vec::new();
@@ -154,6 +155,7 @@ where
         self.commitments.get().await
     }
 
+    #[tracing::instrument(skip(self, transcript), fields(transcript_len = transcript.len()))]
     async fn extract(&self, chat_id: i64, transcript: &str) {
         if let Err(err) = maybe_extract(
             &self.llm,
@@ -168,10 +170,11 @@ where
         )
         .await
         {
-            tracing::error!(chat_id, %err, "memory extraction failed");
+            tracing::error!(%err, "memory extraction failed");
         }
     }
 
+    #[tracing::instrument(skip(self, text, about_users), fields(text_len = text.len()))]
     async fn remember(
         &self,
         chat_id: i64,
@@ -203,12 +206,13 @@ where
         {
             Ok(saved) => saved,
             Err(err) => {
-                tracing::error!(chat_id, %err, "remember: failed to save fact");
+                tracing::error!(%err, "remember: failed to save fact");
                 false
             }
         }
     }
 
+    #[tracing::instrument(skip(self))]
     async fn consolidate(&self) -> Result<(), String> {
         consolidation::run(
             &self.llm,

@@ -52,22 +52,23 @@ impl ToolRegistry {
         self.tools.get(name).is_some_and(|t| t.ends_turn())
     }
 
+    #[tracing::instrument(skip(self, call), fields(tool = %call.name))]
     pub async fn dispatch(&self, call: &ToolCall) -> String {
         let Some(tool) = self.tools.get(&call.name) else {
-            tracing::error!(tool = %call.name, "unknown tool requested by model");
+            tracing::error!("unknown tool requested by model");
             return format!("error: unknown tool '{}'", call.name);
         };
         let args: Value = match serde_json::from_str(&call.arguments) {
             Ok(v) => v,
             Err(err) => {
-                tracing::error!(tool = %call.name, %err, arguments = %call.arguments, "bad tool arguments json");
+                tracing::error!(%err, arguments = %call.arguments, "bad tool arguments json");
                 return format!("error: bad arguments json: {err}");
             }
         };
         match tool.call(args).await {
             Ok(s) => s,
             Err(err) => {
-                tracing::error!(tool = %call.name, %err, "tool call failed");
+                tracing::error!(%err, "tool call failed");
                 format!("error: {err}")
             }
         }
