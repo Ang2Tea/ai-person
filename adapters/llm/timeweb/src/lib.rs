@@ -25,7 +25,7 @@ pub struct TimewebClient {
     vision_model: String,
 }
 
-const TEMPERATURE: f32 = 0.7;
+const REASONING_EFFORT_NONE: &str = "none";
 
 impl TimewebClient {
     pub fn try_new(
@@ -59,6 +59,39 @@ impl TimewebClient {
             LlmRole::Vision => &self.vision_model,
         }
     }
+
+    /// Общий POST для всех трёх эндпоинтов Timeweb. Тело ответа читается
+    /// целиком до проверки статуса (не `error_for_status`, который его
+    /// отбрасывает) — на 4xx/5xx текст тела обычно и есть причина ("unknown
+    /// model" и т.п.), без него ошибка вида "400 Bad Request" не даёт
+    /// ничего для диагностики.
+    async fn post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<T, LlmError> {
+        let resp = self
+            .http
+            .post(format!("{}{path}", self.endpoint))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+
+        if !status.is_success() {
+            return Err(LlmError::Request(format!("HTTP {status}: {text}")));
+        }
+
+        serde_json::from_str(&text)
+            .map_err(|e| LlmError::Request(format!("failed to parse response ({e}): {text}")))
+    }
 }
 
 impl Llm for TimewebClient {
@@ -73,22 +106,10 @@ impl Llm for TimewebClient {
             model: self.model_for(role),
             messages: messages.iter().map(WireMessage::from).collect(),
             tools: tools.iter().map(WireToolSpec::from).collect(),
-            temperature: TEMPERATURE,
+            reasoning_effort: REASONING_EFFORT_NONE,
         };
 
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .json::<ChatResponse>()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?;
+        let resp: ChatResponse = self.post_json("/chat/completions", &req).await?;
 
         let usage = Usage {
             prompt_tokens: resp.usage.prompt_tokens,
@@ -126,19 +147,7 @@ impl Llm for TimewebClient {
             input,
         };
 
-        let resp = self
-            .http
-            .post(format!("{}/embeddings", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .json::<EmbeddingResponse>()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?;
+        let resp: EmbeddingResponse = self.post_json("/embeddings", &req).await?;
 
         resp.data
             .into_iter()
@@ -173,22 +182,9 @@ impl Llm for TimewebClient {
                     },
                 ],
             }],
-            temperature: TEMPERATURE,
         };
 
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| LlmError::Request(e.to_string()))?
-            .json::<ChatResponse>()
-            .await
-            .map_err(|e| LlmError::Request(e.to_string()))?;
+        let resp: ChatResponse = self.post_json("/chat/completions", &req).await?;
 
         resp.choices
             .into_iter()

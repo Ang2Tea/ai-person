@@ -8,7 +8,6 @@ use serde::Serialize;
 pub struct VisionRequest<'a> {
     pub model: &'a str,
     pub messages: Vec<VisionMessage>,
-    pub temperature: f32,
 }
 
 #[derive(Debug, Serialize)]
