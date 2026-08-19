@@ -23,7 +23,6 @@ where
     L: Llm + Clone + Send + Sync + 'static,
     M: Memory + Clone + Send + Sync + 'static,
 {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         history: Arc<dyn ChannelHistory>,
         memory: M,
