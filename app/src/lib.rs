@@ -57,6 +57,7 @@ pub fn init_llm(settings: &Settings) -> Result<TimewebClient, Box<dyn std::error
         &timeweb_token,
         settings.llm.model.clone(),
         settings.llm.embedding_model.clone(),
+        settings.llm.vision_model.clone(),
     )?)
 }
 

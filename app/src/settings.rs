@@ -6,6 +6,7 @@ use serde::Deserialize;
 pub struct LlmSettings {
     pub model: String,
     pub embedding_model: String,
+    pub vision_model: String,
 }
 
 /// Только форма данных — как их загружать (файл, env, что угодно ещё)

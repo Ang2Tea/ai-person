@@ -2,12 +2,22 @@ use chrono::Utc;
 use teloxide::{
     Bot,
     dispatching::dialogue::GetChatId,
+    net::Download,
     requests::Requester,
-    types::{ChatId, MaybeAnonymousUser, Message, MessageReactionUpdated, ReactionType, UpdateKind},
+    types::{
+        ChatId, FileId, MaybeAnonymousUser, Message, MessageReactionUpdated, ReactionType,
+        UpdateKind,
+    },
 };
 
 use bot_core::bot::ChatBot;
 use contracts::{ChannelId, Llm, Memory, Storage};
+
+/// Файлы крупнее этого не скачиваются под vision-описание — чтобы не тратить
+/// трафик/деньги на заведомо неприемлемый для модели по размеру файл (Bot
+/// API и так не отдаёт боту файлы больше 20 МБ, это дополнительный, более
+/// строгий предохранитель именно для дорогого vision-вызова).
+const MAX_IMAGE_BYTES: u32 = 10 * 1024 * 1024;
 
 use crate::errors::DispatchError;
 use crate::history::{BufferStore, BufferedMessage};
@@ -60,7 +70,10 @@ where
     };
     tracing::Span::current().record("chat_id", chat_id.0);
 
-    let Some(text) = describe_message(&msg) else {
+    let Some(text) = describe_media(bot, chat_bot, &msg)
+        .await
+        .or_else(|| describe_message(&msg))
+    else {
         tracing::debug!("Skipping message without representable content");
         return Ok(());
     };
@@ -240,11 +253,110 @@ where
     Ok(())
 }
 
+/// Статичное изображение (фото, файл-картинка, нестатичный стикер сюда не
+/// попадает) — через vision-модель в текстовое описание, которое дальше идёт
+/// в буфер как обычное сообщение. `None` — во входящем нет статичного
+/// изображения, тогда `handle_message` падает на обычный `describe_message`.
+/// Скачивание/распознавание не должно ронять весь апдейт: любая ошибка здесь
+/// превращается в текстовый фолбэк, а не пробрасывается наружу.
+async fn describe_media<L, M>(bot: &Bot, chat_bot: &ChatBot<L, M>, msg: &Message) -> Option<String>
+where
+    L: Llm + Clone + Send + Sync + 'static,
+    M: Memory + Clone + Send + Sync + 'static,
+{
+    let (file_id, file_size, mime_type, action) = if let Some(sizes) = msg.photo() {
+        let photo = sizes.last()?;
+        (
+            photo.file.id.clone(),
+            photo.file.size,
+            "image/jpeg".to_owned(),
+            "прислал(а) фото",
+        )
+    } else if let Some(document) = msg.document() {
+        let mime_type = document.mime_type.as_ref()?.essence_str().to_owned();
+        if !mime_type.starts_with("image/") || mime_type == "image/gif" {
+            return None;
+        }
+        (
+            document.file.id.clone(),
+            document.file.size,
+            mime_type,
+            "прислал(а) файл-изображение",
+        )
+    } else {
+        let sticker = msg.sticker()?;
+        if sticker.flags.is_animated || sticker.flags.is_video {
+            return None;
+        }
+        (
+            sticker.file.id.clone(),
+            sticker.file.size,
+            "image/webp".to_owned(),
+            "прислал(а) стикер",
+        )
+    };
+
+    let caption = msg.caption();
+
+    if file_size > MAX_IMAGE_BYTES {
+        tracing::warn!(file_size, "image too large to download for vision");
+        return Some(with_caption(
+            action,
+            caption,
+            "но файл слишком большой, чтобы его посмотреть",
+        ));
+    }
+
+    match download_and_describe(bot, chat_bot, file_id, &mime_type).await {
+        Ok(description) => Some(match caption {
+            Some(caption) => format!("{action} с подписью «{caption}»: {description}"),
+            None => format!("{action}: {description}"),
+        }),
+        Err(err) => {
+            tracing::warn!(%err, "failed to describe image");
+            Some(with_caption(action, caption, "не удалось распознать"))
+        }
+    }
+}
+
+fn with_caption(action: &str, caption: Option<&str>, note: &str) -> String {
+    match caption {
+        Some(caption) => format!("{action} с подписью «{caption}», {note}"),
+        None => format!("{action}, {note}"),
+    }
+}
+
+/// Скачивает файл по `file_id` и просит vision-модель его описать. Ошибки
+/// (Telegram-скачивание или сам вызов LLM) схлопываются в одну строку — это
+/// внутренний служебный результат для лога, не то, что уходит пользователю.
+async fn download_and_describe<L, M>(
+    bot: &Bot,
+    chat_bot: &ChatBot<L, M>,
+    file_id: FileId,
+    mime_type: &str,
+) -> Result<String, String>
+where
+    L: Llm + Clone + Send + Sync + 'static,
+    M: Memory + Clone + Send + Sync + 'static,
+{
+    let file = bot.get_file(file_id).await.map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    bot.download_file(&file.path, &mut bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    chat_bot
+        .describe_image(&bytes, mime_type)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Текстовое описание содержимого сообщения — вместо голого `.text()`, чтобы
 /// опросы/dice/геолокация/контакты/стикеры/подписи тоже попадали в буфер и
-/// проходили через общий tool-calling цикл, а не отбрасывались молча. Сама
-/// медиа-часть (фото/стикер/голос) не разбирается — это отдельная, более
-/// дорогая задача (нужен доп. вызов другой модели).
+/// проходили через общий tool-calling цикл, а не отбрасывались молча.
+/// Статичные изображения (фото/файлы-картинки/статичные стикеры) сюда не
+/// доходят — их разбирает `describe_media` через vision-модель; здесь
+/// остаются только анимированные/видео-стикеры (эмодзи-плейсхолдер) и всё
+/// остальное неразбираемое медиа (голос и т.п. по-прежнему не описываются).
 fn describe_message(msg: &Message) -> Option<String> {
     if let Some(text) = msg.text() {
         return Some(text.to_owned());

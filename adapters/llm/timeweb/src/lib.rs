@@ -1,14 +1,17 @@
 mod embedding_models;
 mod models;
 mod timeweb_models;
+mod vision;
 mod wire;
 
+use base64::Engine;
 use contracts::{ChatCompletion, ChatMessage, Llm, LlmError, LlmRole, ToolCall, ToolSpec, Usage};
 
 use crate::{
     embedding_models::{EmbeddingRequest, EmbeddingResponse},
     models::ChatRequest,
     timeweb_models::ChatResponse,
+    vision::{ImageUrlData, VisionContentPart, VisionMessage, VisionRequest},
     wire::{WireMessage, WireToolSpec},
 };
 
@@ -19,6 +22,7 @@ pub struct TimewebClient {
     endpoint: String,
     primary_model: String,
     embedding_model: String,
+    vision_model: String,
 }
 
 const TEMPERATURE: f32 = 0.7;
@@ -28,6 +32,7 @@ impl TimewebClient {
         api_key: impl Into<String>,
         primary_model: impl Into<String>,
         embedding_model: impl Into<String>,
+        vision_model: impl Into<String>,
     ) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
@@ -40,16 +45,18 @@ impl TimewebClient {
             endpoint: "https://api.timeweb.ai/v1".to_string(),
             primary_model: primary_model.into(),
             embedding_model: embedding_model.into(),
+            vision_model: vision_model.into(),
         })
     }
 
     /// Единственное место, где `LlmRole` превращается в конкретную строку
     /// модели — привязка задаётся один раз в `try_new` (из конфига), вызовы
-    /// `chat`/`embed` выбирают только роль.
+    /// `chat`/`embed`/`describe_image` выбирают только роль.
     fn model_for(&self, role: LlmRole) -> &str {
         match role {
             LlmRole::Primary => &self.primary_model,
             LlmRole::Embedding => &self.embedding_model,
+            LlmRole::Vision => &self.vision_model,
         }
     }
 }
@@ -137,6 +144,56 @@ impl Llm for TimewebClient {
             .into_iter()
             .next()
             .map(|d| d.embedding)
+            .ok_or(LlmError::EmptyResponse)
+    }
+
+    #[tracing::instrument(level = "debug", skip(self, image_bytes, instruction), fields(?role, mime_type, image_bytes = image_bytes.len()))]
+    async fn describe_image(
+        &self,
+        role: LlmRole,
+        image_bytes: &[u8],
+        mime_type: &str,
+        instruction: &str,
+    ) -> Result<String, LlmError> {
+        let data_url = format!(
+            "data:{mime_type};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(image_bytes)
+        );
+
+        let req = VisionRequest {
+            model: self.model_for(role),
+            messages: vec![VisionMessage {
+                role: "user",
+                content: vec![
+                    VisionContentPart::Text {
+                        text: instruction.to_owned(),
+                    },
+                    VisionContentPart::ImageUrl {
+                        image_url: ImageUrlData { url: data_url },
+                    },
+                ],
+            }],
+            temperature: TEMPERATURE,
+        };
+
+        let resp = self
+            .http
+            .post(format!("{}/chat/completions", self.endpoint))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| LlmError::Request(e.to_string()))?
+            .json::<ChatResponse>()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+
+        resp.choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
             .ok_or(LlmError::EmptyResponse)
     }
 }

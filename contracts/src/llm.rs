@@ -14,6 +14,9 @@ pub enum LlmRole {
     Primary,
     /// Модель эмбеддингов — поиск и дедуп в долгосрочной памяти.
     Embedding,
+    /// Модель с поддержкой vision — описание фото и статичных изображений
+    /// текстом для дальнейшей подстановки в обычный текстовый транскрипт.
+    Vision,
 }
 
 pub trait Llm {
@@ -28,4 +31,15 @@ pub trait Llm {
         role: LlmRole,
         input: &str,
     ) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send;
+    /// Разовое, вне общего tool-calling цикла, описание статичного
+    /// изображения текстом — `instruction` задаёт вызывающий код (bot-core),
+    /// не адаптер, по той же причине, по которой остальные промпты не живут
+    /// в `llm-timeweb`.
+    fn describe_image(
+        &self,
+        role: LlmRole,
+        image_bytes: &[u8],
+        mime_type: &str,
+        instruction: &str,
+    ) -> impl Future<Output = Result<String, LlmError>> + Send;
 }

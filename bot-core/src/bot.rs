@@ -7,6 +7,7 @@ use crate::{chat_locks::ChatLocks, errors::AppError, tools::ToolRegistry};
 
 const MAX_TOOL_ITERATIONS: usize = 5;
 const PROACTIVE_NUDGE_PROMPT: &str = include_str!("../../prompts/proactive_nudge.md");
+const DESCRIBE_IMAGE_PROMPT: &str = include_str!("../../prompts/describe_image.md");
 
 #[derive(Clone)]
 pub struct ChatBot<L, M> {
@@ -82,6 +83,22 @@ where
         self.maybe_spawn_extraction(&chat, last_usage);
 
         Ok(text)
+    }
+
+    /// Разовое описание статичного изображения текстом — вне tool-calling
+    /// цикла и вне истории чата. Вызывающий (канал) сам скачивает байты и
+    /// подставляет получившийся текст в свой обычный текстовый пайплайн, как
+    /// если бы это было обычное сообщение — `ChatBot` про Telegram/файлы
+    /// ничего не знает.
+    pub async fn describe_image(
+        &self,
+        image_bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<String, AppError> {
+        self.llm
+            .describe_image(LlmRole::Vision, image_bytes, mime_type, DESCRIBE_IMAGE_PROMPT)
+            .await
+            .map_err(AppError::from)
     }
 
     /// Собирает системный prompt из личности (`Memory::system_prompt`, уже
