@@ -44,8 +44,14 @@ impl Storage for FileStorage {
         let root = self.root.clone();
 
         tokio::task::spawn_blocking(move || {
-            let entries =
-                fs::read_dir(&root).map_err(|err| io_to_storage_error(prefix.clone(), err))?;
+            // `set` создаёт `root` лениво через `create_dir_all` при первой
+            // записи — до неё (свежая личность, ещё ни одного факта) каталога
+            // просто нет, и это не ошибка, а пустой список.
+            let entries = match fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(err) => return Err(io_to_storage_error(prefix, err)),
+            };
 
             let mut keys = Vec::new();
             for entry in entries {
