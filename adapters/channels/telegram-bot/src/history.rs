@@ -1,0 +1,288 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio::sync::RwLock;
+
+use contracts::{Activity, ChannelHistory, ChannelId, ChatMessage, Storage, StorageError};
+
+use crate::errors::HistoryError;
+
+const TELEGRAM_CHANNEL: &str = "telegram";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BufferedMessage {
+    pub telegram_message_id: i32,
+    pub sender_id: i64,
+    pub sender_name: String,
+    pub text: String,
+    pub timestamp: DateTime<Utc>,
+    pub is_bot: bool, // true для собственных ответов бота
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChatBuffer {
+    messages: VecDeque<BufferedMessage>,
+}
+
+impl ChatBuffer {
+    pub fn push(&mut self, msg: BufferedMessage) {
+        self.messages.push_back(msg);
+    }
+
+    pub fn to_transcript(&self) -> String {
+        self.messages
+            .iter()
+            .map(|m| {
+                let who = if m.is_bot { "Бот" } else { &m.sender_name };
+                format!(
+                    "[{} #{}] {}: {}",
+                    m.timestamp.format("%H:%M"),
+                    m.telegram_message_id,
+                    who,
+                    m.text
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn to_request_messages(&self, system_prompt: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::system(system_prompt),
+            ChatMessage::user(self.to_transcript()),
+        ]
+    }
+
+    pub fn truncate_keep_last(&mut self, n: usize) {
+        while self.messages.len() > n {
+            self.messages.pop_front();
+        }
+    }
+
+    /// Имя последнего собеседника (не бота) — грубая метка для отображения чата
+    /// человеку/модели, у нас нет отдельно хранимого названия чата/группы.
+    pub fn last_sender_name(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.is_bot)
+            .map(|m| m.sender_name.as_str())
+    }
+
+    /// Время последнего события в чате (включая собственные ответы бота) — по
+    /// нему проактивный воркер определяет, не идёт ли сейчас живой разговор.
+    pub fn last_activity(&self) -> Option<DateTime<Utc>> {
+        self.messages.back().map(|m| m.timestamp)
+    }
+
+    /// Число сообщений в буфере — по нему воркер извлечения по простою решает,
+    /// есть ли вообще что извлекать сверх `keep_last_messages`.
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Локальная имитация "непрочитанных": Bot API, в отличие от tdlib,
+    /// такого счётчика вообще не отдаёт (это состояние клиента, а не чата).
+    /// Приближаем его как число сообщений собеседника с момента последнего
+    /// собственного ответа бота в этом чате.
+    pub fn unread_count(&self) -> usize {
+        self.messages.iter().rev().take_while(|m| !m.is_bot).count()
+    }
+}
+
+const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Транскрипт последних сообщений чата — компенсация того, что Telegram Bot
+/// API не даёт читать историю целиком (см. `contracts::ChannelHistory`).
+#[derive(Clone)]
+pub struct BufferStore<S> {
+    storage: S,
+    key: String,
+    buffers: Arc<RwLock<HashMap<i64, ChatBuffer>>>,
+    dirty: Arc<AtomicBool>,
+}
+
+impl<S> BufferStore<S>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    /// `key` — под каким ключом весь буфер (все чаты разом) лежит в
+    /// `Storage`; берётся из конфига (`personality.files.working_memory`),
+    /// а не зашивается константой.
+    pub async fn new(storage: S, key: String) -> Result<Self, HistoryError> {
+        let buffers = match storage.get(key.clone()).await {
+            Ok(raw) => serde_json::from_str(&raw)?,
+            Err(StorageError::NotFound(_)) => HashMap::new(),
+            Err(err) => return Err(HistoryError::Storage(err)),
+        };
+        let store = Self {
+            storage,
+            key,
+            buffers: Arc::new(RwLock::new(buffers)),
+            dirty: Arc::new(AtomicBool::new(false)),
+        };
+        store.spawn_flush_task();
+        Ok(store)
+    }
+
+    fn spawn_flush_task(&self) {
+        let store = self.clone();
+        bot_core::scheduler::spawn_periodic(FLUSH_INTERVAL, move || {
+            let store = store.clone();
+            async move {
+                if let Err(err) = store.flush().await {
+                    tracing::error!(%err, "Can`t flush chat buffer to storage");
+                }
+            }
+        });
+    }
+
+    pub async fn push(&self, chat_id: i64, msg: BufferedMessage) {
+        let mut buffers = self.buffers.write().await;
+        buffers.entry(chat_id).or_default().push(msg);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    pub async fn get(&self, chat_id: i64) -> Option<ChatBuffer> {
+        let buffers = self.buffers.read().await;
+        buffers.get(&chat_id).cloned()
+    }
+
+    /// Все чаты, с которыми бот уже когда-либо взаимодействовал (ключи буфера).
+    pub async fn chat_ids(&self) -> Vec<i64> {
+        let buffers = self.buffers.read().await;
+        buffers.keys().copied().collect()
+    }
+
+    pub async fn truncate_keep_last(&self, chat_id: i64, n: usize) {
+        let mut buffers = self.buffers.write().await;
+        if let Some(buffer) = buffers.get_mut(&chat_id) {
+            buffer.truncate_keep_last(n);
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    pub async fn flush(&self) -> Result<(), HistoryError> {
+        if !self.dirty.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let json = {
+            let buffers = self.buffers.read().await;
+            serde_json::to_string_pretty(&*buffers)?
+        };
+        self.storage
+            .set(self.key.clone(), json)
+            .await
+            .map_err(HistoryError::Storage)?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
+    }
+}
+
+/// `ChannelId.id` для Telegram всегда строка вида `i64.to_string()` — так его
+/// формирует `dispatch.rs`, здесь просто обратное преобразование.
+fn chat_id_from_channel(chat: &ChannelId) -> i64 {
+    chat.id.parse().unwrap_or(0)
+}
+
+impl<S> ChannelHistory for BufferStore<S>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    fn transcript<'a>(
+        &'a self,
+        chat: &'a ChannelId,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            self.get(chat_id_from_channel(chat))
+                .await
+                .map(|b| b.to_transcript())
+                .unwrap_or_default()
+        })
+    }
+
+    fn truncate_keep_last<'a>(
+        &'a self,
+        chat: &'a ChannelId,
+        n: usize,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            BufferStore::truncate_keep_last(self, chat_id_from_channel(chat), n).await;
+        })
+    }
+
+    fn known_chats<'a>(&'a self) -> Pin<Box<dyn Future<Output = Vec<ChannelId>> + Send + 'a>> {
+        Box::pin(async move {
+            self.chat_ids()
+                .await
+                .into_iter()
+                .map(|id| ChannelId {
+                    channel: TELEGRAM_CHANNEL,
+                    id: id.to_string(),
+                })
+                .collect()
+        })
+    }
+
+    fn activity<'a>(
+        &'a self,
+        chat: &'a ChannelId,
+    ) -> Pin<Box<dyn Future<Output = Option<Activity>> + Send + 'a>> {
+        Box::pin(async move {
+            let buffer = self.get(chat_id_from_channel(chat)).await?;
+            let last_activity = buffer.last_activity()?;
+            Some((last_activity, buffer.message_count()))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(is_bot: bool) -> BufferedMessage {
+        BufferedMessage {
+            telegram_message_id: 1,
+            sender_id: 1,
+            sender_name: "тест".to_owned(),
+            text: "привет".to_owned(),
+            timestamp: Utc::now(),
+            is_bot,
+        }
+    }
+
+    #[test]
+    fn unread_count_counts_messages_since_last_bot_reply() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(true));
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+
+        assert_eq!(buffer.unread_count(), 2);
+    }
+
+    #[test]
+    fn unread_count_is_zero_right_after_bot_reply() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(true));
+
+        assert_eq!(buffer.unread_count(), 0);
+    }
+
+    #[test]
+    fn unread_count_counts_everything_if_bot_never_replied() {
+        let mut buffer = ChatBuffer::default();
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+        buffer.push(msg(false));
+
+        assert_eq!(buffer.unread_count(), 3);
+    }
+}

@@ -16,5 +16,7 @@ target
 # rustc will dump stack traces when hitting an internal compiler error to PWD
 rustc-ice-*.txt
 
+.vscode
+
 **/*.env
 personalities/
