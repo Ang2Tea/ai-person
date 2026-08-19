@@ -59,6 +59,9 @@ pub struct Message {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSpecificFields {
-    #[serde(rename = "reasoning_content")]
+    // Не все модели кладут `reasoning_content` сюда (например, `gpt-5.6-luna`
+    // присылает вместо этого только `refusal`) — без `default` такой ответ
+    // не парсился вовсе, хотя `content` в нём уже был готов.
+    #[serde(rename = "reasoning_content", default)]
     pub reasoning_content: String,
 }
