@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = dotenvy::from_path_override(".env");
+    let _ = dotenvy::from_path(".env");
 
     init_tracing();
 
