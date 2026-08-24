@@ -1,12 +1,35 @@
-name: deploy
+name: ci-cd
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
-  build-and-deploy:
+  # Пока репозиторий приватный, отключено ради экономии Action minutes (бесплатно 2000/мес).
+  # Вернуть: раскомментировать джобу и `needs: test` в build ниже.
+  # test:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         components: clippy
+  #
+  #     - uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Test
+  #       run: cargo test --workspace
+  #
+  #     - name: Clippy
+  #       run: cargo clippy --all-targets -- -D warnings
+
+  build:
+    # needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,15 +55,29 @@ jobs:
       - name: Stage binary for upload
         run: mv target/x86_64-unknown-linux-musl/release/bot target/x86_64-unknown-linux-musl/release/bot.new
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bot-binary
+          path: target/x86_64-unknown-linux-musl/release/bot.new
+          retention-days: 1
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bot-binary
+
       - name: Upload staged binary
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          source: "target/x86_64-unknown-linux-musl/release/bot.new"
+          source: "bot.new"
           target: "/root/ai-person-release/"
-          strip_components: 3
 
       - name: Activate binary and restart instances
         uses: appleboy/ssh-action@v1

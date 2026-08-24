@@ -28,33 +28,68 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 бот должен быть администратором этой группы (иначе Telegram не присылает `message_reaction`
 апдейты вообще, независимо от `allowed_updates`).
 
-## Несколько личностей на одном сервере (tmux)
+## Деплой и запуск на сервере (GitHub Actions + systemd)
 
-Каждая личность — отдельный процесс `bot` со своим токеном и своим `config.toml`
-(`[personality] path = "personalities/<имя>"`); общий `[llm]`/`TIMEWEB_KEY` дублировать не нужно.
-`BOT_TOKEN`/`CONFIG_PATH`, заданные в окружении самого процесса, важнее значений из `.env` —
-`.env` лишь подставляет то, что не задано снаружи (`dotenvy::from_path` в `app/src/bin/bot.rs`),
-поэтому общий `.env` (с `TIMEWEB_KEY`/`RUST_LOG`) можно оставить один на все инстансы, не храня
-в нём `BOT_TOKEN` конкретной личности.
+Продакшн (`ai-person-vds`, `/root/ai-person-release`) больше не использует tmux — сборка
+переехала в GitHub Actions (`.github/workflows/deploy.yml`), а запуск на сервере идёт через
+systemd. Каждая личность — отдельный **инстанс шаблонного юнита**, а не отдельный tmux-сеанс.
 
-Поднять ещё одного бота, не трогая уже запущенные:
+### Как это работает
 
+1. Push в `main` → GitHub Actions собирает статический musl-бинарник
+   (`cargo build --release --target x86_64-unknown-linux-musl --features strict-messaging
+   -p app --bin bot`) — сервер сам ничего не компилирует (слишком слаб, 1 vCPU/1GB RAM).
+2. Готовый бинарник заливается на сервер как `bot.new`, затем по SSH: текущий `bot`
+   бэкапится в `bot.prev`, `bot.new` атомарно переименовывается в `bot`
+   (`mv`, не перезапись — иначе `ETXTBSY` на работающем процессе), и вызывается
+   `/root/ai-person-release/deploy-restart.sh`, который перезапускает все инстансы личностей.
+3. Секреты в `SSH_HOST`/`SSH_USER`/`SSH_KEY` (GitHub → Settings → Secrets and variables →
+   Actions) — деплой заходит на сервер отдельным SSH-ключом, не личным.
+
+### systemd: как это устроено
+
+Один **шаблонный юнит** на все личности — `/etc/systemd/system/ai-person-bot@.service`.
+Имя после `@` (например, `default` или `masha`) подставляется в юнит как `%i`:
+
+```ini
+[Service]
+WorkingDirectory=/root/ai-person-release
+EnvironmentFile=/root/ai-person-release/common.env   # общие TIMEWEB_KEY/RUST_LOG
+EnvironmentFile=/root/ai-person-release/%i.env        # свой BOT_TOKEN на личность
+Environment=CONFIG_PATH=/root/ai-person-release/config-%i.toml
+ExecStart=/root/ai-person-release/bot
+Restart=always
+KillSignal=SIGINT   # обязательно — иначе systemd убьёт процесс SIGTERM'ом и пропустит флаш буфера
 ```
-cd ai-person-release
-cp config.toml config-<имя>.toml
+
+Сейчас реально запущены `ai-person-bot@default` (личность `default`, `config-default.toml`,
+`default.env`) и `ai-person-bot@masha` (личность `masha`, `config-masha.toml`, `masha.env`).
+
+**Полезные команды:**
+
+| Команда | Что делает |
+|---|---|
+| `systemctl status ai-person-bot@default` | жив ли процесс, последние строки лога |
+| `journalctl -u ai-person-bot@masha -f` | смотреть логи вживую (замена `tmux attach`) |
+| `systemctl restart ai-person-bot@<имя>` | перезапустить один инстанс (флашит буфер через SIGINT) |
+| `systemctl daemon-reload` | обязательно после правки файла юнита, до `restart` |
+
+**Добавить новую личность:**
+```
+cd /root/ai-person-release
+cp config-default.toml config-<имя>.toml
 # в config-<имя>.toml поменять [personality] path = "personalities/<имя>"
-
-tmux new-session -d -s ai-person-bot-<имя> \
-  'CONFIG_PATH=config-<имя>.toml BOT_TOKEN=<токен из @BotFather> ./bot'
+echo "BOT_TOKEN=<токен из @BotFather>" > <имя>.env
+chmod 600 <имя>.env
+# дописать "ai-person-bot@<имя>.service" в цикл внутри deploy-restart.sh
+systemctl enable --now ai-person-bot@<имя>
 ```
 
-Проверить: `tmux ls`, посмотреть логи живьём — `tmux attach -t ai-person-bot-<имя>`
-(отключиться без остановки бота — `Ctrl-b d`).
-
-Остановить конкретный экземпляр: найти его PID (`ps aux | grep ./bot`) и отправить
-`kill -INT <pid>` — не `-TERM`/`-9`. Именно `SIGINT` ловит `tokio::signal::ctrl_c()` в `main()`
-и успевает сбросить буфер переписки на диск перед выходом; tmux-сессия закрывается сама вместе
-с процессом.
+**Откат на предыдущую версию бинарника** (если деплой сломал прод):
+```
+cd /root/ai-person-release && mv bot.prev bot && ./deploy-restart.sh
+```
+`bot.prev` хранит только одну предыдущую версию — перезаписывается при каждом следующем деплое.
 
 ## Структура
 
