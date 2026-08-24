@@ -40,12 +40,10 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     match kind {
-        UpdateKind::Message(msg) => handle_message(bot, bot_user_id, chat_bot, history, msg).await,
-        UpdateKind::EditedMessage(msg) => {
-            handle_edited_message(bot, bot_user_id, chat_bot, history, msg).await
-        }
+        UpdateKind::Message(msg) => handle_message(bot, chat_bot, history, msg).await,
+        UpdateKind::EditedMessage(msg) => handle_edited_message(chat_bot, history, msg).await,
         UpdateKind::MessageReaction(reaction) => {
-            handle_reaction(bot, bot_user_id, chat_bot, history, reaction).await
+            handle_reaction(bot_user_id, chat_bot, history, reaction).await
         }
         _ => Ok(()),
     }
@@ -54,7 +52,6 @@ where
 #[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_message<L, M, S>(
     bot: &Bot,
-    bot_user_id: i64,
     chat_bot: &ChatBot<L, M>,
     history: &BufferStore<S>,
     msg: Message,
@@ -94,7 +91,7 @@ where
     };
     history.push(chat_id.0, incoming).await;
 
-    run_and_reply(bot, bot_user_id, chat_bot, history, chat_id, from.id.0 as i64, &text).await
+    run_and_reply(chat_bot, chat_id, from.id.0 as i64, &text).await
 }
 
 /// Правки в Telegram применяются только к тексту/подписи — dice, стикер,
@@ -102,8 +99,6 @@ where
 /// достаточно текста/подписи, в отличие от `describe_message`.
 #[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_edited_message<L, M, S>(
-    bot: &Bot,
-    bot_user_id: i64,
     chat_bot: &ChatBot<L, M>,
     history: &BufferStore<S>,
     msg: Message,
@@ -145,12 +140,11 @@ where
     };
     history.push(chat_id.0, incoming).await;
 
-    run_and_reply(bot, bot_user_id, chat_bot, history, chat_id, from.id.0 as i64, &text).await
+    run_and_reply(chat_bot, chat_id, from.id.0 as i64, &text).await
 }
 
 #[tracing::instrument(skip_all, fields(chat_id = tracing::field::Empty, user_id = tracing::field::Empty))]
 async fn handle_reaction<L, M, S>(
-    bot: &Bot,
     bot_user_id: i64,
     chat_bot: &ChatBot<L, M>,
     history: &BufferStore<S>,
@@ -195,14 +189,15 @@ where
     };
     history.push(chat_id.0, incoming).await;
 
-    run_and_reply(bot, bot_user_id, chat_bot, history, chat_id, user.id.0 as i64, &text).await
+    run_and_reply(chat_bot, chat_id, user.id.0 as i64, &text).await
 }
 
-async fn run_and_reply<L, M, S>(
-    bot: &Bot,
-    bot_user_id: i64,
+/// Отдаёт ход модели через общий tool-calling цикл `ChatBot` — сама
+/// отправка (если она вообще случилась) уже произошла как побочный эффект
+/// вызова инструмента отправки (`send_message`) внутри этого цикла, здесь
+/// её дожидаться и записывать в историю не нужно.
+async fn run_and_reply<L, M>(
     chat_bot: &ChatBot<L, M>,
-    history: &BufferStore<S>,
     chat_id: ChatId,
     user_id: i64,
     query: &str,
@@ -210,7 +205,6 @@ async fn run_and_reply<L, M, S>(
 where
     L: Llm + Clone + Send + Sync + 'static,
     M: Memory + Clone + Send + Sync + 'static,
-    S: Storage + Clone + Send + Sync + 'static,
 {
     let chat = ChannelId {
         channel: TELEGRAM_CHANNEL,
@@ -221,34 +215,7 @@ where
         id: user_id.to_string(),
     };
 
-    let Some(text) = chat_bot.run_turn(chat, user, query).await? else {
-        return Ok(());
-    };
-
-    send_and_record(bot, bot_user_id, history, chat_id, text).await
-}
-
-pub(crate) async fn send_and_record<S>(
-    bot: &Bot,
-    bot_user_id: i64,
-    history: &BufferStore<S>,
-    chat_id: ChatId,
-    text: String,
-) -> Result<(), DispatchError>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    let sent = bot.send_message(chat_id, &text).await?;
-
-    let outgoing = BufferedMessage {
-        telegram_message_id: sent.id.0,
-        sender_id: bot_user_id,
-        sender_name: "bot".to_owned(),
-        text,
-        timestamp: Utc::now(),
-        is_bot: true,
-    };
-    history.push(chat_id.0, outgoing).await;
+    chat_bot.run_turn(chat, user, query).await?;
 
     Ok(())
 }

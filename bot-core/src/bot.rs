@@ -47,42 +47,40 @@ where
     }
 
     /// Обычный ход — сериализация по чату, tool-calling цикл, фоновое
-    /// извлечение памяти. Channel-агностично: не отправляет ответ сам,
-    /// только возвращает решённый моделью текст — отправка (и запись
-    /// исходящего в историю канала) остаётся заботой вызывающего.
+    /// извлечение памяти. Channel-агностично и ничего не отправляет само по
+    /// возвращаемому значению: единственный способ доставить что-то
+    /// собеседнику — модель сама вызывает инструмент отправки (например,
+    /// `send_message`), который шлёт сообщение и пишет его в историю канала
+    /// как свой побочный эффект. Если модель за ход не вызвала ни одного
+    /// такого инструмента — ход просто завершается молча, это нормальный
+    /// исход, а не ошибка.
     #[tracing::instrument(skip(self, chat, user, query), fields(chat_id = %chat.id, user_id = %user.id))]
-    pub async fn run_turn(
-        &self,
-        chat: ChannelId,
-        user: ChannelId,
-        query: &str,
-    ) -> Result<Option<String>, AppError> {
+    pub async fn run_turn(&self, chat: ChannelId, user: ChannelId, query: &str) -> Result<(), AppError> {
         let _chat_guard = self.chat_locks.lock(&chat).await;
 
         let messages = self.build_messages(&chat, &user, Some(query)).await;
-        let (text, last_usage) = self.run_tool_loop(&chat, messages, true).await?;
+        let last_usage = self.run_tool_loop(&chat, messages).await?;
         self.maybe_spawn_extraction(&chat, last_usage);
 
-        Ok(text)
+        Ok(())
     }
 
     /// Проактивный ход — worker периодически выбирает малоактивный чат и даёт
     /// модели шанс написать первой. В отличие от `run_turn`: нет входящего
     /// сообщения (подсказка-нужда добавляется поверх транскрипта, но не
-    /// записывается в историю — это не реальное событие), и при исчерпании
-    /// итераций без решения ответ не форсируется — промолчать тут нормальный
-    /// исход, а не невежливость.
+    /// записывается в историю — это не реальное событие). Как и в `run_turn`,
+    /// промолчать (не вызвать инструмент отправки) — нормальный исход.
     #[tracing::instrument(skip(self, chat), fields(chat_id = %chat.id))]
-    pub async fn run_proactive(&self, chat: ChannelId) -> Result<Option<String>, AppError> {
+    pub async fn run_proactive(&self, chat: ChannelId) -> Result<(), AppError> {
         let _chat_guard = self.chat_locks.lock(&chat).await;
 
         let mut messages = self.build_messages(&chat, &chat, None).await;
         messages.push(ChatMessage::user(PROACTIVE_NUDGE_PROMPT.trim()));
 
-        let (text, last_usage) = self.run_tool_loop(&chat, messages, false).await?;
+        let last_usage = self.run_tool_loop(&chat, messages).await?;
         self.maybe_spawn_extraction(&chat, last_usage);
 
-        Ok(text)
+        Ok(())
     }
 
     /// Разовое описание статичного изображения текстом — вне tool-calling
@@ -139,19 +137,16 @@ where
     }
 
     /// Цикл вызовов LLM + диспетчеризация инструментов, общий для обычного
-    /// хода и про активного. Возвращает решённый моделью текст (`None`, если
-    /// она вызвала инструмент, завершающий ход молча, — или, при
-    /// `force_final_answer: false`, просто исчерпала итерации без решения) и
-    /// `Usage` последнего вызова (нужна вызывающему для решения о фоновом
-    /// извлечении памяти).
+    /// хода и проактивного. Ничего не возвращает, кроме `Usage` последнего
+    /// вызова (нужна вызывающему для решения о фоновом извлечении памяти) —
+    /// сама доставка сообщения (если она вообще случилась в этот ход) уже
+    /// произошла как побочный эффект вызова инструмента отправки внутри
+    /// `self.tools.dispatch`. Обычный текстовый ответ модели без вызовов
+    /// инструментов никуда не отправляется и просто завершает ход — как и
+    /// исчерпание `MAX_TOOL_ITERATIONS` без единого вызова: это осознанно не
+    /// форсируется, промолчать — нормальный исход.
     #[tracing::instrument(skip(self, chat, messages), fields(chat_id = %chat.id))]
-    async fn run_tool_loop(
-        &self,
-        chat: &ChannelId,
-        mut messages: Vec<ChatMessage>,
-        force_final_answer: bool,
-    ) -> Result<(Option<String>, Usage), AppError> {
-        let mut final_reply: Option<ChatMessage> = None;
+    async fn run_tool_loop(&self, chat: &ChannelId, mut messages: Vec<ChatMessage>) -> Result<Usage, AppError> {
         let mut last_usage = Usage::default();
 
         for i in 0..MAX_TOOL_ITERATIONS {
@@ -164,8 +159,7 @@ where
             let calls = reply.tool_calls.clone().unwrap_or_default();
 
             if calls.is_empty() {
-                tracing::debug!(iteration = i, "model requested no tools");
-                final_reply = Some(reply);
+                tracing::debug!(iteration = i, "model ended the turn without sending anything");
                 break;
             }
 
@@ -182,22 +176,11 @@ where
 
             if ended_turn {
                 tracing::debug!(iteration = i, "a tool ended the turn silently");
-                return Ok((None, last_usage));
+                break;
             }
         }
 
-        if final_reply.is_none() && force_final_answer {
-            tracing::warn!("hit max tool iterations, forcing a final text answer without tools");
-            let completion = self.llm.chat(LlmRole::Primary, &messages, &[]).await?;
-            last_usage = completion.usage;
-            final_reply = Some(completion.message);
-        }
-
-        let text = final_reply
-            .and_then(|r| r.content)
-            .filter(|t| !t.is_empty());
-
-        Ok((text, last_usage))
+        Ok(last_usage)
     }
 
     fn maybe_spawn_extraction(&self, chat: &ChannelId, last_usage: Usage) {

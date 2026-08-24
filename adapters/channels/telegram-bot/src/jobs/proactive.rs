@@ -2,13 +2,11 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rand::RngExt;
-use teloxide::{Bot, types::ChatId};
 use tracing::Instrument;
 
 use bot_core::bot::ChatBot;
 use contracts::{BackgroundJob, ChannelId, Llm, Memory, Storage};
 
-use crate::dispatch;
 use crate::history::BufferStore;
 use crate::settings::ProactiveSettings;
 
@@ -16,28 +14,18 @@ const TELEGRAM_CHANNEL: &str = "telegram";
 
 /// Периодически выбирает малоактивный известный чат и с настраиваемым шансом
 /// даёт модели шанс написать в него первой (`ChatBot::run_proactive`) — сама
-/// отправка (или отказ) остаётся решением модели, воркер только выбирает,
-/// в какой чат постучаться и когда. Нуждается в `teloxide::Bot`, чтобы
-/// реально отправить сообщение — поэтому живёт здесь, не в `bot-core`.
+/// отправка (или отказ писать вовсе) остаётся решением модели: она либо
+/// вызывает инструмент отправки внутри `run_proactive`, либо ход завершается
+/// молча. Воркер только выбирает, в какой чат постучаться и когда.
 pub struct ProactiveJob<L, M, S> {
-    bot: Bot,
-    bot_user_id: i64,
     chat_bot: ChatBot<L, M>,
     history: BufferStore<S>,
     settings: ProactiveSettings,
 }
 
 impl<L, M, S> ProactiveJob<L, M, S> {
-    pub fn new(
-        bot: Bot,
-        bot_user_id: i64,
-        chat_bot: ChatBot<L, M>,
-        history: BufferStore<S>,
-        settings: ProactiveSettings,
-    ) -> Self {
+    pub fn new(chat_bot: ChatBot<L, M>, history: BufferStore<S>, settings: ProactiveSettings) -> Self {
         Self {
-            bot,
-            bot_user_id,
             chat_bot,
             history,
             settings,
@@ -53,8 +41,6 @@ where
 {
     fn spawn(self: Box<Self>) {
         let ProactiveJob {
-            bot,
-            bot_user_id,
             chat_bot,
             history,
             settings,
@@ -85,26 +71,8 @@ where
                         id: chat_id.to_string(),
                     };
 
-                    match chat_bot.run_proactive(chat).await {
-                        Ok(Some(text)) => {
-                            if let Err(err) = dispatch::send_and_record(
-                                &bot,
-                                bot_user_id,
-                                &history,
-                                ChatId(chat_id),
-                                text,
-                            )
-                            .await
-                            {
-                                tracing::error!(%err, "proactive: failed to send message");
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::debug!("proactive: model chose not to write");
-                        }
-                        Err(err) => {
-                            tracing::error!(%err, "proactive turn failed");
-                        }
+                    if let Err(err) = chat_bot.run_proactive(chat).await {
+                        tracing::error!(%err, "proactive turn failed");
                     }
                 }
                 .instrument(tracing::info_span!("proactive_job", chat_id))
