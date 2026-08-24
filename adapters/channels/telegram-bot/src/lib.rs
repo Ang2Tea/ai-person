@@ -7,6 +7,8 @@ mod read_chat_history;
 mod send_message;
 mod send_reaction;
 pub mod settings;
+#[cfg(feature = "strict-messaging")]
+mod text;
 
 pub use errors::DispatchError;
 pub use jobs::proactive::ProactiveJob;

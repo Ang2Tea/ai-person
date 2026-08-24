@@ -84,6 +84,16 @@ where
                 .and_then(Value::as_i64)
                 .map(|id| MessageId(id as i32));
 
+            #[cfg(feature = "strict-messaging")]
+            if crate::text::split_into_paragraphs(&text).len() > 1 {
+                return Err(ToolError::Failed(
+                    "text содержит пустую строку между абзацами — так нельзя, Telegram отправит \
+это одним сообщением. Раздели на несколько отдельных вызовов send_message, по одному сообщению \
+на вызов."
+                        .to_owned(),
+                ));
+            }
+
             let mut request = bot.send_message(chat_id, &text);
             if let Some(message_id) = reply_to_message_id {
                 request = request.reply_parameters(ReplyParameters::new(message_id));

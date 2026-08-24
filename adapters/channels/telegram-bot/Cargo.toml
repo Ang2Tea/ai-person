@@ -3,6 +3,14 @@ name = "channel-telegram-bot"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+default = []
+# Отклонять send_message с пустой строкой внутри text (модель должна звать
+# инструмент отдельно на каждое сообщение, а не пытаться впихнуть несколько
+# абзацев в один вызов). Включить без правки кода: собрать с
+# `--features strict-messaging`.
+strict-messaging = []
+
 [dependencies]
 contracts = { workspace = true }
 bot-core = { workspace = true }

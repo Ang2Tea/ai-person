@@ -3,6 +3,10 @@ name = "app"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+default = []
+strict-messaging = ["channel-telegram-bot/strict-messaging"]
+
 [dependencies]
 bot-core = { workspace = true }
 channel-telegram-bot = { workspace = true }
