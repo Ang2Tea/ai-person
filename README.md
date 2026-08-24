@@ -28,6 +28,34 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 бот должен быть администратором этой группы (иначе Telegram не присылает `message_reaction`
 апдейты вообще, независимо от `allowed_updates`).
 
+## Несколько личностей на одном сервере (tmux)
+
+Каждая личность — отдельный процесс `bot` со своим токеном и своим `config.toml`
+(`[personality] path = "personalities/<имя>"`); общий `[llm]`/`TIMEWEB_KEY` дублировать не нужно.
+`BOT_TOKEN`/`CONFIG_PATH`, заданные в окружении самого процесса, важнее значений из `.env` —
+`.env` лишь подставляет то, что не задано снаружи (`dotenvy::from_path` в `app/src/bin/bot.rs`),
+поэтому общий `.env` (с `TIMEWEB_KEY`/`RUST_LOG`) можно оставить один на все инстансы, не храня
+в нём `BOT_TOKEN` конкретной личности.
+
+Поднять ещё одного бота, не трогая уже запущенные:
+
+```
+cd ai-person-release
+cp config.toml config-<имя>.toml
+# в config-<имя>.toml поменять [personality] path = "personalities/<имя>"
+
+tmux new-session -d -s ai-person-bot-<имя> \
+  'CONFIG_PATH=config-<имя>.toml BOT_TOKEN=<токен из @BotFather> ./bot'
+```
+
+Проверить: `tmux ls`, посмотреть логи живьём — `tmux attach -t ai-person-bot-<имя>`
+(отключиться без остановки бота — `Ctrl-b d`).
+
+Остановить конкретный экземпляр: найти его PID (`ps aux | grep ./bot`) и отправить
+`kill -INT <pid>` — не `-TERM`/`-9`. Именно `SIGINT` ловит `tokio::signal::ctrl_c()` в `main()`
+и успевает сбросить буфер переписки на диск перед выходом; tmux-сессия закрывается сама вместе
+с процессом.
+
 ## Структура
 
 ```
