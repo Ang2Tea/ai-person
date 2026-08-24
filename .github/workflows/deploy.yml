@@ -1,0 +1,57 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl cross tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-bot-strict-messaging
+
+      - name: Build bot (release, musl, strict-messaging)
+        run: >
+          cargo build --release
+          --target x86_64-unknown-linux-musl
+          --features strict-messaging
+          -p app --bin bot
+
+      - name: Stage binary for upload
+        run: mv target/x86_64-unknown-linux-musl/release/bot target/x86_64-unknown-linux-musl/release/bot.new
+
+      - name: Upload staged binary
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "target/x86_64-unknown-linux-musl/release/bot.new"
+          target: "/root/ai-person-release/"
+          strip_components: 3
+
+      - name: Activate binary and restart instances
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /root/ai-person-release
+            chmod +x bot.new
+            [ -f bot ] && cp -p bot bot.prev
+            mv bot.new bot
+            ./deploy-restart.sh
