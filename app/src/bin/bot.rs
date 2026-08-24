@@ -60,7 +60,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             memory,
             settings.memory.idle_extraction_after_minutes,
         )),
-        Box::new(ProactiveJob::new(chat_bot.clone(), history.clone(), settings.proactive)),
+        Box::new(ProactiveJob::new(
+            bot.clone(),
+            bot_user_id,
+            chat_bot.clone(),
+            history.clone(),
+            settings.proactive,
+        )),
     ];
     for job in jobs {
         job.spawn();
