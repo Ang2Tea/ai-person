@@ -68,7 +68,7 @@ impl ToolRegistry {
         match tool.call(args).await {
             Ok(s) => s,
             Err(err) => {
-                tracing::error!(%err, "tool call failed");
+                tracing::error!(%err, arguments = %call.arguments, "tool call failed");
                 format!("error: {err}")
             }
         }
