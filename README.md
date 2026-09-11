@@ -9,7 +9,7 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
 ## Стек
 
 `teloxide` (Telegram, long polling), `tokio`, `futures`, `reqwest`, `serde`, `config` (TOML),
-`thiserror`, `chrono`, `serde_yaml`.
+`thiserror`, `chrono`, `serde_yaml`, `tracing`/`tracing-subscriber`, `clap` (CLI `admin`-бинарника).
 
 ## Запуск
 
@@ -21,7 +21,7 @@ OpenAI-совместимый API Timeweb Cloud (`chat/completions` + `embedding
    ```
 2. `config.toml` в корне — уже есть рабочий пример (активная личность, модель, пороги памяти).
    Путь к конфигу можно переопределить переменной окружения `CONFIG_PATH`.
-3. `cargo run`.
+3. `cargo run -p app --bin bot`.
 
 Если бот должен отвечать в группах, а не только в личных сообщениях — отключите privacy mode
 у бота через `@BotFather` → `/setprivacy` → Disable. Чтобы видеть реакции на сообщения в группах —
@@ -93,42 +93,51 @@ cd /root/ai-person-release && mv bot.prev bot && ./deploy-restart.sh
 
 ## Структура
 
+Cargo workspace, разбитый на крейты по границам ответственности:
+
 ```
-src/
-  main.rs                — сборка зависимостей, цикл поллинга (Message/EditedMessage/MessageReaction)
-  bin/admin.rs            — CLI для ручного запуска фоновых задач (extract/sleep), без Telegram
-  bot.rs                 — ChatBot: разбор апдейтов, общий tool-calling цикл (run_turn/run_proactive)
-  chat_locks.rs           — per-chat мьютекс, сериализует обработку одного чата
-  commitments.rs          — список открытых задач/обещаний по чату (отдельно от буфера и дневника)
-  consolidation.rs        — ночная консолидация дневника + генерация insights
-  proactive.rs            — периодический воркер: даёт модели шанс написать первой
-  idle_extraction.rs       — извлечение фактов по простою чата (не только по порогу токенов)
-  settings.rs             — конфиг из config.toml
-  contracts.rs            — формат обмена с LLM (OpenAI-подобный)
-  buffer.rs               — краткосрочная память (буфер переписки по чатам)
-  memory/                 — долгосрочная память: факты, эмбеддинги, дедуп, поиск
-  adapters/               — HTTP-клиент к Timeweb, файловое хранилище буфера
-  tools/                  — инструменты модели (send_message, send_reaction, remember, ...)
+contracts/                — общие типы и трейты (Llm, Storage, Memory, Message, ToolCall, ...),
+                             на них ссылаются все остальные крейты, не зная друг о друге напрямую
+bot-core/                 — ядро бота, не привязанное к конкретному каналу/провайдеру
+  src/bot.rs               — ChatBot: разбор апдейтов, общий tool-calling цикл
+  src/chat_locks.rs         — per-chat мьютекс, сериализует обработку одного чата
+  src/consolidation.rs      — ночная консолидация дневника + генерация insights
+  src/idle_extraction.rs    — извлечение фактов по простою чата (не только по порогу токенов)
+  src/scheduler.rs          — общий паттерн периодических фоновых задач (spawn_periodic)
+  src/tools/                — инструменты модели, не завязанные на канал (remember, wait, get_current_datetime)
+memory/                   — долгосрочная память: факты, эмбеддинги, дедуп, поиск, commitments
+adapters/
+  llm/timeweb/              — HTTP-клиент к Timeweb AI Gateway (chat/completions, embeddings, vision)
+  storages/fs/               — файловая реализация Storage
+  channels/telegram-bot/      — интеграция с Telegram (teloxide): диспетчер апдейтов, send_message/
+                                send_reaction, проактивная рассылка (jobs/proactive.rs)
+app/                      — сборка конкретных зависимостей и бинарники
+  src/bin/bot.rs            — запуск бота (long polling)
+  src/bin/admin.rs          — CLI для ручного запуска фоновых задач (extract/sleep), без Telegram
+  src/settings.rs           — конфиг из config.toml
 personalities/<name>/
   system_prompt.md        — системный промпт личности
   insights.md             — генерируется ночной консолидацией, подмешивается в системный промпт
   working_memory.json     — сериализованный буфер переписки (только сырой транскрипт)
-  commitments/{chat_id}.md — список открытых задач/обещаний, отдельно по чату
+  commitments.md           — список открытых задач/обещаний, общий на личность (не по чату)
   diary/*.md              — факты долгосрочной памяти (по одному файлу на факт)
 prompts/                  — служебные системные промпты, не привязанные к личности
   extraction_system.md    — роль модели при фоновом выделении фактов
   extraction_instruction.md — формат ответа при выделении фактов
   consolidation_merge_system.md — роль модели при слиянии похожих фактов
+  consolidation_prune_system.md — роль модели при удалении устаревших фактов
   insights_system.md      — роль модели при генерации insights из публичных фактов
+  describe_image.md        — роль модели при описании присланных фото
+  proactive_nudge.md       — подсказка модели при проактивной рассылке
 config.toml               — путь к активной личности, модель, пороги памяти
 ```
 
-Раз в сутки в 3:00 по локальному времени сервера фоновая задача (`consolidation.rs`) сливает
-похожие факты дневника в один (силами LLM), удаляет давно не использовавшиеся факты и
-пересобирает `insights.md` из публичных фактов — обновление подхватывается ботом сразу, без
-перезапуска.
+Раз в сутки в 3:00 по локальному времени сервера фоновая задача (`bot-core/src/consolidation.rs` —
+расписание, `memory/src/consolidation.rs` — сама логика) сливает похожие факты дневника в один
+(силами LLM), удаляет давно не использовавшиеся факты и пересобирает `insights.md` из публичных
+фактов — обновление подхватывается ботом сразу, без перезапуска.
 
-С интервалом `[proactive].interval_minutes` (`config.toml`) фоновый воркер (`proactive.rs`)
+С интервалом `[proactive].interval_minutes` (`config.toml`) фоновый воркер (`jobs/proactive.rs`)
 выбирает случайный известный чат, в котором давно (`min_inactivity_minutes`) не было сообщений —
 живой разговор в выборку не попадает — и с шансом `probability` даёт модели возможность написать
 туда первой; решение писать или промолчать (`wait`) остаётся за моделью.
@@ -142,9 +151,9 @@ config.toml               — путь к активной личности, м�
 тексту входящего сообщения и подмешивает их в системный промпт (`auto_retrieval_similarity_threshold`/
 `auto_retrieval_limit` в `config.toml`) — отдельного инструмента-поиска для этого нет, находка не
 зависит от того, догадается ли модель спросить. Заодно тем же вызовом, что извлекает факты,
-обновляется отдельный от буфера и от дневника список открытых задач/обещаний этого чата
-(`commitments.rs`, `personalities/<name>/commitments/{chat_id}.md`) — курируется LLM, не старше
-нескольких дней.
+обновляется отдельный от буфера и от дневника список открытых задач/обещаний личности — общий на
+все её чаты, не по одному (`memory/src/commitments.rs`, `personalities/<name>/commitments.md`) —
+курируется LLM, не старше нескольких дней.
 
 В `diary/*.md` эмбеддинг хранится одной строкой (числа через запятую), а не YAML-списком —
 `serde_yaml` не умеет однострочный (flow-style) вывод, а список на 1000+ чисел делает файл
